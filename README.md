@@ -3,7 +3,7 @@
 고정된 `ModernBERT-base`의 여러 층 표현(임베딩 벡터 1개 + 22개 층 = 23개 층 벡터)을 어떻게 결합하느냐에 따라 분류 오차율이 어떻게 달라지는지 검증하는 심층학습 기말 프로젝트 저장소입니다.
 
 기준 문서:
-- 요구사항 및 테스트 경계: [`SPEC.md`](SPEC.md)
+- 요구사항 및 테스트 경계: [`docs/SPEC.md`](docs/SPEC.md)
 - 공용 용어집: [`GLOSSARY.md`](GLOSSARY.md)
 - 설계 결정(ADR): [`docs/adr/`](docs/adr/)
 - 작업 분해 및 진행 상황: [`docs/03-plan.md`](docs/03-plan.md), [`docs/progress.md`](docs/progress.md)
@@ -14,10 +14,10 @@
 
 ## 폴더 구조
 ```text
-├── SPEC.md / GLOSSARY.md      # 요구사항 및 용어 단일 기준
+├── GLOSSARY.md                # 용어 단일 기준
 ├── AGENTS.md / CLAUDE.md      # AI 에이전트 공통 규칙
 ├── configs/                   # 실험 행렬, 판정 규칙(11/30 고정), 1주차 환경 설정
-├── docs/                      # ADR, WBS 계획(03-plan.md), 진행 현황(progress.md)
+├── docs/                      # SPEC.md(요구사항 단일 기준), ADR, WBS 계획(03-plan.md), 진행 현황(progress.md)
 ├── src/layer_fusion/          # 핵심 패키지 (contracts, layers, data, inputs, extraction, providers, fusion, runner, judgment, reporting)
 ├── scripts/                   # verify.py, sync_skills.py, CLI 진입점
 ├── tests/                     # 단위 테스트 및 Seam ①②③ 테스트

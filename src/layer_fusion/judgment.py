@@ -1,8 +1,11 @@
-"""Judgment seam: pure hypothesis evaluation from ResultRecords + DecisionRules (SPEC.md, ADR 0007)."""
+"""Judgment seam: pure hypothesis evaluation from ResultRecords + DecisionRules.
+
+References: docs/SPEC.md, ADR 0007.
+"""
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from layer_fusion.contracts import (
     DecisionRules,

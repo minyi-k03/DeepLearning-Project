@@ -12,7 +12,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fusion", required=True, choices=["B0", "F1", "F2", "F3", "F4", "B0+"])
     parser.add_argument("--backbone", default="frozen", choices=["frozen", "finetune"])
     parser.add_argument("--data-amount", default="full", choices=["full", "small"])
-    parser.add_argument("--layer-subset", default="all", choices=["all", "global_only", "local_only"])
+    parser.add_argument(
+        "--layer-subset", default="all", choices=["all", "global_only", "local_only"]
+    )
     parser.add_argument("--input-setting", default=None, choices=["L128", "L512", "Lfull"])
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--run-kind", default="debug", choices=["main", "debug"])

@@ -33,7 +33,7 @@ def test_f2_global_and_local_subsets_exclude_embedding() -> None:
 
 @pytest.mark.skip(reason="TODO(T-03 / T-06): Enable after small-data sampling is wired")
 def test_small_data_sampling_shared_within_seed_and_varies_across_seeds() -> None:
-    """1,000 per class; identical doc_ids for same seed across fusion methods, distinct across seeds."""
+    """1,000 per class; same doc_ids per seed across fusion methods, distinct across seeds."""
     raise NotImplementedError
 
 
@@ -63,5 +63,5 @@ def test_mismatched_provider_metadata_raises_error() -> None:
 
 @pytest.mark.skip(reason="TODO(T-06): Enable after runner is implemented")
 def test_result_record_contains_required_telemetry_fields() -> None:
-    """ResultRecord contains trainable_params, train_seconds, learning_curve, predictions, run_kind."""
+    """ResultRecord has trainable_params, train_seconds, learning_curve, predictions, run_kind."""
     raise NotImplementedError

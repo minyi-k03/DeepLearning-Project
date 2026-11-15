@@ -58,6 +58,7 @@ def main() -> None:
         sys.exit(f"[verify] FAILED at stage 'harness': {exc}")
 
     run_step("syntax", [sys.executable, "-m", "compileall", "-q", "src", "scripts", "tests"])
+    run_step("lint", [sys.executable, "-m", "ruff", "check", "src", "tests", "scripts"])
     run_step("pytest", [sys.executable, "-m", "pytest"])
     print("[verify] ALL PASSED")
 

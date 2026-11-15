@@ -1,14 +1,14 @@
 # AGENTS.md
 
 ## 1. Project Overview
-- Read `SPEC.md`, `GLOSSARY.md`, and `docs/adr/` before implementing features.
+- Read `docs/SPEC.md`, `GLOSSARY.md`, and `docs/adr/` before implementing features.
 - ModernBERT-base layer-fusion classification study (Track A); roles: 고용민 (model, fusion, judgment/analysis), 차가원 (infra, extraction/cache, sequential queue runner).
 
 ## 2. Source of Truth
-- `SPEC.md` defines functional requirements, contracts, and test seams.
-- `docs/` planning files are history; `SPEC.md` wins once it exists, and `docs/adr/0001`–`0009` record accepted decisions.
+- `docs/SPEC.md` defines functional requirements, contracts, and test seams.
+- `docs/` planning files are history; `docs/SPEC.md` wins once it exists, and `docs/adr/0001`–`0009` record accepted decisions.
 - `GLOSSARY.md` defines canonical terms; `configs/` and `tests/` provide executable verification rules.
-- If documents conflict, report the conflict instead of guessing. Never invent values for `SPEC.md` §결정 필요 사항; keep them `null` / `TBD` until confirmed.
+- If documents conflict, report the conflict instead of guessing. Never invent values for `docs/SPEC.md` §결정 필요 사항; keep them `null` / `TBD` until confirmed.
 
 ## 3. Working Procedure
 - At session start, read `docs/progress.md`, `docs/03-plan.md`, and recent git log, then run `python scripts/verify.py`.
@@ -19,8 +19,8 @@
 
 ## 4. Collaboration and Architecture Rules
 - Work on a feature branch (`feat/<task-id>-<name>`); never commit directly to `main`.
-- Shared/high-risk files (`SPEC.md`, `GLOSSARY.md`, `AGENTS.md`, `configs/`, `src/layer_fusion/contracts.py`, `src/layer_fusion/layers.py`, `src/layer_fusion/judgment.py`, `scripts/verify.py`) require teammate review before merging.
-- Update contracts in `SPEC.md` / `src/layer_fusion/contracts.py` and tests before changing dependent modules.
+- Shared/high-risk files (`docs/SPEC.md`, `GLOSSARY.md`, `AGENTS.md`, `configs/`, `src/layer_fusion/contracts.py`, `src/layer_fusion/layers.py`, `src/layer_fusion/judgment.py`, `scripts/verify.py`) require teammate review before merging.
+- Update contracts in `docs/SPEC.md` / `src/layer_fusion/contracts.py` and tests before changing dependent modules.
 - Keep Execution seam (`src/layer_fusion/runner.py`) and Judgment seam (`src/layer_fusion/judgment.py`) CPU-testable with fake providers / synthetic records.
 - Do not mix `run_kind="debug"` or `track="reproduction"` records into main judgment/report tables, and do not run multiple `main` timed experiments concurrently on the shared GPU (ADR 0009).
 

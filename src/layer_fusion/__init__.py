@@ -27,8 +27,8 @@ from layer_fusion.layers import (
     LOCAL_LAYERS,
     LOCAL_WINDOW_HALF,
     LOCAL_WINDOW_TOTAL,
-    NUM_LAYERS,
     NUM_LAYER_VECTORS,
+    NUM_LAYERS,
 )
 
 __all__ = [

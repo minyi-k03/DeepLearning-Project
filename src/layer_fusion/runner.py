@@ -1,8 +1,11 @@
-"""Execution seam, sequential queue runner, and reproduction track runner (SPEC.md, ADR 0004, 0009)."""
+"""Execution seam, sequential queue runner, and reproduction track runner.
+
+References: docs/SPEC.md, ADR 0004, ADR 0009.
+"""
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from layer_fusion.contracts import ResultRecord, RunConfig
 from layer_fusion.providers import LayerVectorProvider

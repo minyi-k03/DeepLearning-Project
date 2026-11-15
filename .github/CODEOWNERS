@@ -1,7 +1,7 @@
 # Shared/high-risk files requiring teammate review before merge.
 # TODO: Replace placeholder GitHub handles with actual team usernames.
 
-# /SPEC.md                         @yongmin-github @gawon-github
+# /docs/SPEC.md                    @yongmin-github @gawon-github
 # /GLOSSARY.md                     @yongmin-github @gawon-github
 # /AGENTS.md                       @yongmin-github @gawon-github
 # /configs/                        @yongmin-github @gawon-github
