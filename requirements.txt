@@ -1,0 +1,13 @@
+# Core runtime & CPU test dependencies
+numpy>=1.26
+pyyaml>=6.0
+scipy>=1.11
+pytest>=8.0
+ruff>=0.6
+
+# ML / Extraction / Reporting dependencies
+# NOTE: Exact transformers 5.x version must be pinned after Week 1 verification (ADR 0005).
+torch>=2.2
+transformers>=5.0.0
+datasets>=2.18
+matplotlib>=3.8
