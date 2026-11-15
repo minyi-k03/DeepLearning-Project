@@ -50,13 +50,6 @@
       "computedHash": "f0820b18426a7d9a6c823a890988ba0ac70bf0fd596d30d7ef07c88558728c23",
       "installMode": "copy"
     },
-    "pptx": {
-      "source": "anthropics/skills",
-      "sourceType": "github",
-      "skillPath": "skills/pptx/SKILL.md",
-      "computedHash": "793fc7fb09bc02f27c2d3e80d575dcd976bcaba8e7298affdf6573312c0cdf87",
-      "installMode": "copy"
-    },
     "python-testing-patterns": {
       "source": "wshobson/agents",
       "sourceType": "github",

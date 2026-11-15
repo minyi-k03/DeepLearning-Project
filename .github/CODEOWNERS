@@ -1,13 +1,12 @@
 # Shared/high-risk files requiring teammate review before merge.
-# TODO: Replace placeholder GitHub handles with actual team usernames.
 
-# /docs/SPEC.md                    @yongmin-github @gawon-github
-# /GLOSSARY.md                     @yongmin-github @gawon-github
-# /AGENTS.md                       @yongmin-github @gawon-github
-# /configs/                        @yongmin-github @gawon-github
-# /src/layer_fusion/contracts.py   @yongmin-github @gawon-github
-# /src/layer_fusion/layers.py      @yongmin-github @gawon-github
-# /src/layer_fusion/judgment.py    @yongmin-github
-# /src/layer_fusion/providers.py   @gawon-github
-# /scripts/verify.py               @yongmin-github @gawon-github
-# /.github/                        @yongmin-github @gawon-github
+/docs/SPEC.md                    @minyi-k03 @gawounnx
+/GLOSSARY.md                     @minyi-k03 @gawounnx
+/AGENTS.md                       @minyi-k03 @gawounnx
+/configs/                        @minyi-k03 @gawounnx
+/src/layer_fusion/contracts.py   @minyi-k03 @gawounnx
+/src/layer_fusion/layers.py      @minyi-k03 @gawounnx
+/src/layer_fusion/judgment.py    @minyi-k03
+/src/layer_fusion/providers.py   @gawounnx
+/scripts/verify.py               @minyi-k03 @gawounnx
+/.github/                        @minyi-k03 @gawounnx
