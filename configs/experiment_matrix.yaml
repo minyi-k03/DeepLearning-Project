@@ -1,0 +1,93 @@
+# 실험 행렬 (SPEC.md §실험 행렬, ADR 0001~0008)
+# 미정(TBD) 항목은 본 실험 전 결정 시 채웁니다.
+
+experiments:
+  - id: mnli_frozen_full
+    dataset: mnli
+    backbone_condition: frozen
+    data_amount: full
+    input_setting: null
+    fusion_methods: [B0, F1, F2, F3, F4, B0+]
+    layer_subset: all
+    hypotheses: [H1, H4_prime]
+    seeds: null  # 11/30 판정 규칙 문서에서 확정 (핵심 5시드 / 나머지 3시드)
+
+  - id: mnli_frozen_small
+    dataset: mnli
+    backbone_condition: frozen
+    data_amount: small  # 클래스당 1,000건
+    input_setting: null
+    fusion_methods: null  # TBD (구현 단계에서 확정)
+    layer_subset: all
+    hypotheses: [H2]
+    seeds: null
+
+  - id: mnli_finetune_full
+    dataset: mnli
+    backbone_condition: finetune
+    data_amount: full
+    input_setting: null
+    fusion_methods: [B0, BEST_FUSION]  # 가장 좋은 결합 방식은 H1/사전 규칙 기준 확정
+    layer_subset: all
+    hypotheses: [H3]
+    seeds: null
+
+  - id: sst2_frozen_full
+    dataset: sst2
+    backbone_condition: frozen
+    data_amount: full
+    input_setting: null
+    fusion_methods: null  # TBD (층 가중치 비교에 F2 필수 포함)
+    layer_subset: all
+    hypotheses: [H4]
+    seeds: null
+
+  - id: imdb_frozen_length
+    dataset: imdb
+    backbone_condition: frozen
+    data_amount: full
+    input_settings: [L128, L512, Lfull]
+    fusion_methods: [B0, F1, F2]
+    layer_subset: all
+    hypotheses: [H5a, H5b]
+    seeds: null
+
+  - id: imdb_frozen_layer_ablation
+    dataset: imdb
+    backbone_condition: frozen
+    data_amount: full
+    input_settings: [L128, L512, Lfull]
+    fusion_methods: [F2]
+    layer_subsets: [global_only, local_only]  # 임베딩 벡터 제외
+    hypotheses: [H5c]
+    seeds: null
+
+  - id: imdb_frozen_lfull_f4
+    dataset: imdb
+    backbone_condition: frozen
+    data_amount: full
+    input_setting: Lfull
+    fusion_methods: [F4]
+    layer_subset: all
+    hypotheses: [H5c]
+    seeds: null
+
+reproduction_track:
+  # 본 실험 결과표와 분리됨 (ADR 0004)
+  - id: repro_mnli
+    dataset: mnli
+    track: reproduction
+    backbone_condition: finetune
+    data_amount: full
+    num_runs: 3
+    paper_reported_accuracy: 89.1
+    paper_reported_error_rate: 10.9
+
+  - id: repro_sst2
+    dataset: sst2
+    track: reproduction
+    backbone_condition: finetune
+    data_amount: full
+    num_runs: 3
+    paper_reported_accuracy: 96.0
+    paper_reported_error_rate: 4.0

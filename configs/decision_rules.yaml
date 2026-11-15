@@ -1,0 +1,59 @@
+# 판정 규칙 문서 (SPEC.md §판정과 분석, ADR 0007)
+# 11/30에 모든 값을 고정하며, 본 실험 결과를 본 뒤에는 절대 변경하지 않습니다.
+
+freeze_date: "2026-11-30"
+status: draft  # 11/30 고정 후 "locked"로 변경
+
+hypotheses:
+  H1:
+    type: confirmatory
+    priority: 1
+    description: "백본 고정 시 층 결합이 B0보다 낫다 (MNLI)"
+    target_fusion_rule: null  # TBD: F1~F4 중 대표 방식 또는 다중 비교 규칙
+  H3:
+    type: confirmatory
+    priority: 2
+    description: "파인튜닝하면 결합 효과가 줄거나 사라진다 (MNLI)"
+  H2:
+    type: confirmatory
+    priority: 3
+    description: "소량 데이터에서 효과가 더 크다 (MNLI)"
+  H4_prime:
+    type: confirmatory
+    priority: 4
+    description: "처음 보는 장르에서도 유지된다 (MNLI mismatched)"
+  H5b:
+    type: confirmatory
+    priority: 5
+    description: "긴 입력의 이득이 층 결합에서 더 크다 (IMDB, F2로 판정 / F1 보조)"
+  H5a:
+    type: confirmatory
+    priority: 6
+    description: "긴 입력 자체가 효과가 있다 (IMDB)"
+    target_fusion_rule: null  # TBD: H5a를 판정할 결합 방식
+  H4:
+    type: exploratory
+    priority: 7
+    description: "추론과 감성은 기대는 층이 다르다 (MNLI vs SST-2)"
+  H5c:
+    type: exploratory
+    priority: 8
+    description: "입력이 길수록 전역 층에 더 기댄다 (IMDB)"
+
+criteria:
+  mcnemar_alpha: null                  # TBD: McNemar 유의수준
+  multiple_comparison_correction: null # TBD: 다중 비교 보정 여부 및 방식
+  multi_seed_mcnemar_aggregation: null # TBD: 여러 시드의 문서별 예측 결합 방식
+  min_bucket_samples: null             # TBD: 길이 구간별 최소 표본 기준
+  below_min_sample_handling: null      # TBD: 최소 표본 미달 구간 표시 방식
+  core_num_seeds: 5
+  secondary_num_seeds: 3
+  core_comparisons_for_5_seeds: null   # TBD: 5시드 대상 핵심 비교 목록
+  finetune_num_seeds: null             # TBD: 파인튜닝 조건 시드 수
+  best_fusion_selection_rule: null     # TBD: 파인튜닝 조건에 쓸 "가장 좋은 결합 방식" 선정 기준
+
+layer_weight_interpretation:
+  include_embedding_in_cog: null       # TBD: 임베딩 벡터 가중치 처리 방식 (GLOSSARY상 층 번호 없음)
+  include_embedding_in_global_denom: null
+  seed_rank_corr_min: null             # TBD: 시드 간 순위 상관 하한
+  cog_seed_std_max: null               # TBD: 무게중심 시드 간 표준편차 상한

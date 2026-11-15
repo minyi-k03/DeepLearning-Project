@@ -1,0 +1,32 @@
+# 1주차 확인으로 확정할 환경·데이터 설정 (SPEC.md §결정 필요 사항, ADR 0005/0006)
+# 본 실험 실행 전에 모두 채워 고정해야 합니다.
+
+backbone:
+  model_name: "answerdotai/ModernBERT-base"
+  num_layers: 22
+  num_layer_vectors: 23  # 임베딩 벡터 1개 + 22개 층
+  hidden_size: 768
+
+runtime_lock:
+  transformers_version: null       # 5.x 중 고정 버전 (Week 1 확인)
+  last_vector_is_final_norm: null  # 23번째 층 벡터가 최종 정규화 출력인지 검증 결과 (true/false)
+  attn_implementation: null        # "flash_attention_2" | "sdpa" (ADR 0005)
+  torch_compile: null              # true | false (ADR 0005)
+  cache_dtype: null                # "float32" | "float16" (MNLI train ~28GB fp32 / ~14GB fp16)
+
+imdb_length_check:
+  observed_max_tokens: null        # ModernBERT 토크나이저로 측정한 IMDB 최대 토큰 길이
+  lfull_max_length_cap: null       # 4096 이하면 자르지 않음, 초과 시 4096 유지 (ADR 0006)
+
+dataset_approval:
+  mnli_approved: null              # 교수님 승인 여부 (거절 시 AG News 비상 계획, ADR 0003)
+  sst2_approved: null              # 교수님 승인 여부 (미승인 시 제외, ADR 0003)
+
+training_budget:
+  lr_candidates: null              # 학습률 후보 3개 (튜닝 분할에서 선택, 모든 결합 방식 동일)
+  epochs: null                     # 모든 결합 방식 동일 에폭 수
+  early_stopping: null             # 모든 결합 방식 동일 조기 종료 기준
+  batch_size: null
+  finetune_lr_candidates: null     # 파인튜닝 조건 학습률 범위
+  include_special_tokens_in_pool: null
+  extract_time_included_in_train_time: null

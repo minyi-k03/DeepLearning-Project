@@ -1,0 +1,39 @@
+# Secrets & local env
+.env
+.env.*
+!.env.example
+
+# Local AI agent files
+CLAUDE.local.md
+.claude/settings.local.json
+.superpowers/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Large data, caches, checkpoints, and generated outputs
+data/cache/*
+!data/cache/.gitkeep
+results/runs/*
+!results/runs/.gitkeep
+results/reports/*
+!results/reports/.gitkeep
+results/reproduction/*
+!results/reproduction/.gitkeep
+*.pt
+*.pth
+*.safetensors
+*.npy
+*.npz
+*.parquet
