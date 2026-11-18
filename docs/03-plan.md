@@ -16,6 +16,7 @@
 - "상태"는 아래 다섯 값 중 하나로 시작하고, 필요하면 괄호로 브랜치·PR·막힌 이유를 덧붙인다. 눈에 띄도록 기호를 붙이고, 대기 외에는 굵게 쓴다.
   - ⬜ 대기 / 🔄 **진행** / 👀 **리뷰 대기** / ✅ **완료** / ⛔ **막힘**
   - `완료` = 완료 조건 충족 + 병합(코드 Task). 상위 Task(T-01~T-09) 표제의 상태는 하위 Task를 요약한 값이다.
+  - **상태 변경은 그 Task를 끝내는 PR 안에 함께 넣는다.** PR을 올릴 때 상태를 `✅ **완료** (PR #N 병합 시)`처럼 미리 적고 상위 Task 표제도 같이 갱신해, 병합과 동시에 main에 반영되게 한다(2026-11-18 차가원·고용민 합의). 리뷰 중 막히면 👀/⛔로 되돌린다.
 - 마감이 밀리면 해당 Task의 상태 열과 §8 진행 기록에 적고, 뒤따르는 Task 마감을 같이 다시 잡는다. 11/30(판정 규칙 고정·기능 동결)과 12/14(발표)는 움직이지 않는다.
 
 ---
@@ -144,7 +145,7 @@
 | T-01a | ✅ **완료** (PR #2 병합, 차가원 Mac·GPU 서버·고용민 PC 확인) | Python 환경·의존성 잠금, README 설치 절차 | — | 11/17(화) | 차가원 | — | 새 환경에서 README대로 설치 후 verify 통과 (transformers 버전은 T-02a에서 확정 후 잠금 갱신) | verify, 두 사람 컴퓨터에서 실행 | 예 | 보통 | ○ |
 | T-01b | ✅ **완료** (CODEOWNERS·main 보호·PR 흐름 확인 완료) | git 저장소 초기화, main 보호, CODEOWNERS(AGENTS.md §4 공통 파일) | — | 11/16(월) | 차가원 | — | 개인 브랜치(YongMin·Gawoun) → PR → main 흐름 작동, 공통 파일에 리뷰어 지정 | 테스트 PR 1건 | 예 | 높음 | ○ |
 | T-01c | ✅ **완료** (PR #4 병합) | `contracts.py` 계약 검토·합의 (SPEC §데이터 형태와 필드 대조) | 52 | 11/17(화) | 고용민 (리뷰 차가원) | — | `RunConfig`·`ResultRecord`·`CacheMetadata`·`DecisionRules`가 SPEC 필드를 모두 담음 | verify, 상대 리뷰 | 예 | 높음 | ○ |
-| T-01d | ✅ **완료** (PR #9 병합, `7b93320`: ADR 0002 복구·ADR 0003/0005 문구 정리) | 문서 정합성: ADR 0002 파일 누락 복구, ADR 0003 "SST-2 판정" 문구 정리 | — | 11/17(화) | 공통 | — | ADR 0001~0009 파일이 모두 있고 H4 표현이 ADR 0007·GLOSSARY와 일치 | 문서 리뷰 | 예 | 낮음 | ○ |
+| T-01d | ✅ **완료** (PR #9 병합: ADR 0002 복구, ADR 0003·0005 문구 정리) | 문서 정합성: ADR 0002 파일 누락 복구, ADR 0003 "SST-2 판정" 문구 정리 | — | 11/17(화) | 공통 | — | ADR 0001~0009 파일이 모두 있고 H4 표현이 ADR 0007·GLOSSARY와 일치 | 문서 리뷰 | 예 | 낮음 | ○ |
 
 ### T-02 환경 확인 (11/16–11/22) — ✅ **완료**
 
@@ -159,13 +160,13 @@
 | ID | 상태 | 제목 | US | 마감 | 담당 | Blocked by | 완료 조건 | 확인 방법 | 공통 | 위험 | 병렬 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | T-03a | 🔄 **진행** (YongMin: 구현·테스트 통과, PR 전) | 데이터 모듈: MNLI·SST-2·IMDB 공통 로더, 문서 ID, MNLI matched/mismatched, 튜닝 분할 10%, 소량 표본(시드마다 새로·클래스당 1,000·ID 기록), 데이터셋 제외/AG News 전환이 설정만으로 되게 | 1, 3–11 | 11/19(목) | 고용민 | T-01c | 평가셋 = MNLI·SST-2 validation, IMDB test. 같은 시드 → 같은 표본, 다른 시드 → 다른 표본 | 단위 테스트(작은 가짜 데이터), `test_small_data_sampling_...` un-skip(T-06a와 함께) | 아니오 | 보통 | ○ |
-| T-03b | 👀 **리뷰 대기** (Gawoun: `build_tokenized_inputs` 구현, 자르기 길이 테스트 통과) | 입력 구성: MNLI [SEP] 단일 입력, 앞+뒤 자르기(L128 32+94, L512 128+382, 특수 토큰 포함 128/512), Lfull 상한, 토큰 길이·길이 구간·시야 비율 | 2, 12–14, 17–19 | 11/21(토) | 차가원 | T-01a | 자르기 길이가 정확하고 모든 IMDB 문서에 길이·길이 구간이 붙음 | `test_head_tail_truncation_budgets` un-skip, 기존 길이 구간·시야 비율 테스트 | 아니오 | 보통 | ○ |
+| T-03b | ✅ **완료** (PR #8 병합: 앞+뒤 자르기·MNLI 결합·길이 구간) | 입력 구성: MNLI [SEP] 단일 입력, 앞+뒤 자르기(L128 32+94, L512 128+382, 특수 토큰 포함 128/512), Lfull 상한, 토큰 길이·길이 구간·시야 비율 | 2, 12–14, 17–19 | 11/21(토) | 차가원 | T-01a | 자르기 길이가 정확하고 모든 IMDB 문서에 길이·길이 구간이 붙음 | `test_head_tail_truncation_budgets` un-skip, 기존 길이 구간·시야 비율 테스트 | 아니오 | 보통 | ○ |
 
 ### T-04 추출·캐시·공급원 — 🔄 **진행**
 
 | ID | 상태 | 제목 | US | 마감 | 담당 | Blocked by | 완료 조건 | 확인 방법 | 공통 | 위험 | 병렬 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| T-04a | 👀 **리뷰 대기** (Gawoun: 가짜 공급원·실행 전 설정 검사, 불일치 테스트 통과) | 공급원 인터페이스 확정, `FakeLayerVectorProvider.make_synthetic`, 생성 설정 불일치 오류 | 26 | 11/19(목) | 차가원 | T-01c | 가짜 공급원으로 실행 seam 테스트를 작성할 수 있음, 설정이 다르면 `CacheConfigMismatchError` | `test_mismatched_provider_metadata_raises_error` un-skip | 예 | 보통 | ○ |
+| T-04a | ✅ **완료** (PR #8 병합: 가짜 공급원·실행 전 설정 검사) | 공급원 인터페이스 확정, `FakeLayerVectorProvider.make_synthetic`, 생성 설정 불일치 오류 | 26 | 11/19(목) | 차가원 | T-01c | 가짜 공급원으로 실행 seam 테스트를 작성할 수 있음, 설정이 다르면 `CacheConfigMismatchError` | `test_mismatched_provider_metadata_raises_error` un-skip | 예 | 보통 | ○ |
 | T-04b | ⬜ 대기 | 층 벡터 추출기·캐시 writer·`CacheProvider`: [N, 23, 768] + doc_id·라벨 순서 + 생성 설정(모델·버전·길이·자르기 방식) | 21–23, 25, 27 | 11/24(화) | 차가원 | T-02a, T-03b | 패딩 제외 평균, 짧은 문서는 L512 = Lfull, 순서 일치 | Seam ③ 나머지 5개 un-skip (`tests/test_extraction.py`) | 아니오 | 높음 | — |
 
 ### T-05 결합 헤드 — ⬜ 대기
@@ -321,3 +322,6 @@ Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 세션 
 - 2026-11-18 · T-03a(고용민): `data.py` 구현 — `DATASET_SPECS`(MNLI·SST-2·IMDB·AG News, 데이터셋 이름만으로 전환), `rows_to_records`(doc_id `mnli-validation_matched-000012` 형식, MNLI matched/mismatched를 `genre_split`으로 태그, 범위 밖 라벨은 `ValueError`), `load_dataset_splits`(`{"train","eval"}`, HF `datasets`는 함수 안에서 늦게 import, 원문 그대로 유지), `make_tuning_split`(클래스 비율 유지·시드 결정적·튜닝 레코드 `split="tuning"`), `sample_small_dataset`(클래스당 `per_class`·지역 `random.Random(seed)`·입력 순서 무관·클래스 부족 시 `ValueError`). `tests/test_data.py` 21개 추가, `test_small_data_sampling_...` un-skip. verify ALL PASSED(68 passed, 25 skipped). **미확인**: 이 환경에 `datasets`가 없어 실제 HF 다운로드 경로(`load_dataset_splits`)는 실행해 보지 못함 — 설치된 환경에서 3개 데이터셋 건수·라벨 분포 확인 필요. **SPEC 미정 항목은 값을 정하지 않음**: 튜닝 분할을 하나로 고정할지는 호출자가 넘기는 `seed`로, 소량 표본이 튜닝 분할을 포함할지는 호출자가 넘기는 `train_records`로 결정(T-06a). 튜닝 분할이 클래스 비율 유지(stratified)인 것은 구현 선택이므로 팀 확인 필요.
 - 2026-11-18 · T-03a 교차검증 반영(고용민): 다른 에이전트 리뷰 9건을 실제 코드·실행으로 대조, 8건 반영. (1) `make_tuning_split`·`sample_small_dataset`이 같은 시드에서 같은 난수열을 써 **소량 표본이 튜닝 분할 안에 통째로 들어가던 문제**(MNLI 규모 재현: 클래스 0 1,000/1,000 중복) → 용도별 난수열(`random.Random("layer_fusion.data:<용도>:<seed>")`)로 분리, 수정 후 겹침 298/3,000(≈10%, 독립 기대값). (2) `seed`를 두 함수 모두 필수 키워드 인자로(빠뜨린 시드가 0으로 조용히 재사용되지 않게), `sample_small_dataset`에 필수 `num_classes` 추가(빈 입력·빠진 클래스 차단). (3) 빈 입력·중복 `doc_id`·허용되지 않은 split(튜닝 분할은 `train`만, 소량 표본은 `train`/`tuning`만, `eval` 거부) 오류. (4) 튜닝 분할도 `doc_id` 정렬 후 추출(입력 순서 무관). (5) 클래스가 작아 튜닝 분할이 0건 또는 전체가 되면 오류(`round(0.1×5)=0`). (6) 가짜 `datasets` 모듈 주입으로 `load_dataset_splits` 테스트, AG News 변환 테스트 추가. (7) `test_small_data_sampling_...` seam 테스트는 runner를 거치지 않아 다시 skip(T-06a에서 un-skip, 데이터 수준은 `tests/test_data.py`가 검증). 반영하지 않음: `FakeLayerVectorProvider.make_synthetic(doc_records=...)`가 `train`/`eval` 외 split(`tuning`)을 조용히 버리는 점 — `providers.py`(차가원 담당)와 T-06a 설계 문제라 **팀 확인 필요**: 캐시는 `train`/`eval`만 있으므로 T-06a에서 튜닝 분할을 `train` 배치의 doc_id 부분집합으로 고를지, 공급원에 `tuning` split을 둘지 결정.
 - 2026-11-18 · PR #8 리뷰 반영(차가원): 고용민 교차검증 반영 — `check_provider_for_run`의 `input_setting` 비교에서 `is not None` 조건 제거(MNLI·SST-2 실행에 IMDB 캐시가 들어오는 경우도 차단, 테스트 추가), 실제 ModernBERT 토크나이저로 MNLI 직접 결합 `[CLS] a [SEP] b [SEP]` = `tokenizer(a, b)` 확인 테스트 추가. 리뷰에서 팀 합의: Lfull 상한 초과 시 오류 유지, IMDB `<br />` 원문 유지, `CacheMetadata`에 데이터셋 필드 추가(계약 변경, 고용민이 SPEC부터 반영), 본 실험 `expected_cache_meta` 필수(T-06b에서 자동 생성), **캐시 float16 저장·로드 시 float32**(디버깅 추출에서 최대 절댓값 1회 확인 후 확정), **토큰 평균에 특수 토큰 포함(true)** → `week1_env.yaml` 기록은 T-04b에서.
+- 2026-11-18 · T-03b·T-04a 완료(차가원): PR #8 고용민 승인 후 병합(`aee4f10`). /code-review(표준·명세) 반영분 포함. T-04b로 넘긴 항목: `TokenizedInputs` 데이터클래스, `truncation_rule` 문자열 형식 확인, 문서별 시야 비율, 데이터셋 필드·IMDB `input_setting` 검사(계약 변경), `expected_cache_meta` 필수 규칙 SPEC 반영, `cache_dtype`·`include_special_tokens_in_pool` 기록.
+- 2026-11-18 · T-01d 완료 표시(차가원, 담당 공통): PR #9(고용민) 병합 확인 후 상태 ✅, T-01 묶음 제목 ✅로 갱신.
+- 2026-11-18 · 규칙 추가(차가원·고용민 합의): 상태가 PR 병합보다 한 단계씩 늦게 main에 반영되던 문제(T-01d·T-03b·T-04a) 때문에, §0에 "상태 변경은 Task를 끝내는 PR 안에 함께 넣는다" 규칙을 추가. §0은 사람만 고치는 부분이라 두 사람 합의를 근거로 수정.
