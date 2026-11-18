@@ -1,0 +1,131 @@
+{
+  "task": "T-02a",
+  "measured_on": "2026-11-18",
+  "model_name": "answerdotai/ModernBERT-base",
+  "environment": {
+    "python": "3.11.18",
+    "platform": "Linux-7.0.0-42-generic-x86_64-with-glibc2.41",
+    "torch": "2.15.0+cu132",
+    "transformers": "5.23.0",
+    "cuda_available": true,
+    "cuda": "13.2",
+    "gpu": "NVIDIA GeForce RTX 5090"
+  },
+  "results": [
+    {
+      "attn_implementation": "sdpa",
+      "torch_compile": false,
+      "contract": {
+        "model_name": "answerdotai/ModernBERT-base",
+        "transformers_version": "5.23.0",
+        "torch_version": "2.15.0+cu132",
+        "device": "cuda",
+        "attn_implementation": "sdpa",
+        "torch_compile": false,
+        "atol": 1e-05,
+        "num_docs": 3,
+        "num_hidden_states": 23,
+        "expected_hidden_states": 23,
+        "last_equals_final_norm_of_raw": true,
+        "last_equals_last_hidden_state": true,
+        "last_equals_raw": false,
+        "token_mean_matches": true,
+        "slot_mean_norms": [
+          5.76,
+          20.66,
+          32.34,
+          47.69,
+          51.22,
+          125.42,
+          130.83,
+          132.8,
+          140.95,
+          150.93,
+          88.13,
+          91.91,
+          1223.61,
+          1226.04,
+          1230.35,
+          1238.08,
+          3642.17,
+          3664.77,
+          3703.87,
+          3725.62,
+          3756.67,
+          3791.33,
+          27.17
+        ],
+        "passed": true
+      },
+      "benchmark": {
+        "steps": 20,
+        "batch_size": 32,
+        "seq_len": 512,
+        "mean_forward_sec": 0.1071
+      }
+    },
+    {
+      "attn_implementation": "sdpa",
+      "torch_compile": true,
+      "contract": {
+        "model_name": "answerdotai/ModernBERT-base",
+        "transformers_version": "5.23.0",
+        "torch_version": "2.15.0+cu132",
+        "device": "cuda",
+        "attn_implementation": "sdpa",
+        "torch_compile": true,
+        "atol": 1e-05,
+        "num_docs": 3,
+        "num_hidden_states": 23,
+        "expected_hidden_states": 23,
+        "last_equals_final_norm_of_raw": true,
+        "last_equals_last_hidden_state": true,
+        "last_equals_raw": false,
+        "token_mean_matches": true,
+        "slot_mean_norms": [
+          5.76,
+          20.66,
+          32.34,
+          47.69,
+          51.22,
+          125.42,
+          130.83,
+          132.8,
+          140.95,
+          150.93,
+          88.13,
+          91.91,
+          1223.61,
+          1226.04,
+          1230.35,
+          1238.08,
+          3642.17,
+          3664.77,
+          3703.87,
+          3725.62,
+          3756.67,
+          3791.33,
+          27.17
+        ],
+        "passed": true
+      },
+      "benchmark": {
+        "steps": 20,
+        "batch_size": 32,
+        "seq_len": 512,
+        "mean_forward_sec": 0.0971
+      }
+    },
+    {
+      "attn_implementation": "flash_attention_2",
+      "torch_compile": false,
+      "error": "ImportError: FlashAttention2 has been toggled on, but it cannot be used due to the following error: the package for FlashAttention2 doesn't seem to be installed."
+    },
+    {
+      "attn_implementation": "flash_attention_2",
+      "torch_compile": true,
+      "error": "ImportError: FlashAttention2 has been toggled on, but it cannot be used due to the following error: the package for FlashAttention2 doesn't seem to be installed."
+    }
+  ],
+  "all_contracts_passed": false
+}
