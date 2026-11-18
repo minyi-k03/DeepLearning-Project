@@ -1,0 +1,86 @@
+{
+  "task": "T-02b",
+  "measured_on": "2026-11-15",
+  "model_name": "answerdotai/ModernBERT-base",
+  "dataset_name": "stanfordnlp/imdb",
+  "length_definition": "input_ids length with special tokens, no truncation, raw text",
+  "environment": {
+    "python": "3.11.15",
+    "transformers": "5.23.0",
+    "datasets": "5.2.0",
+    "tokenizer_class": "TokenizersBackend",
+    "tokenizer_model_max_length": 8192
+  },
+  "splits": {
+    "train": {
+      "num_docs": 25000,
+      "max_tokens": 3270,
+      "min_tokens": 13,
+      "mean_tokens": 305.29,
+      "percentiles": {
+        "p50": 226,
+        "p90": 602,
+        "p95": 784,
+        "p99": 1175,
+        "p99.9": 1476
+      },
+      "length_buckets": {
+        "<=512": 21501,
+        "512-1024": 2991,
+        ">1024": 508
+      },
+      "docs_over_512": 3499,
+      "docs_over_lfull_cap_limit": 0,
+      "truncated_ratio_at_cap_limit": 0.0
+    },
+    "test": {
+      "num_docs": 25000,
+      "max_tokens": 2971,
+      "min_tokens": 10,
+      "mean_tokens": 298.29,
+      "percentiles": {
+        "p50": 223,
+        "p90": 582,
+        "p95": 764,
+        "p99": 1168,
+        "p99.9": 1374
+      },
+      "length_buckets": {
+        "<=512": 21722,
+        "512-1024": 2811,
+        ">1024": 467
+      },
+      "docs_over_512": 3278,
+      "docs_over_lfull_cap_limit": 0,
+      "truncated_ratio_at_cap_limit": 0.0
+    }
+  },
+  "all_splits": {
+    "num_docs": 50000,
+    "max_tokens": 3270,
+    "min_tokens": 10,
+    "mean_tokens": 301.79,
+    "percentiles": {
+      "p50": 225,
+      "p90": 591,
+      "p95": 774,
+      "p99": 1172,
+      "p99.9": 1420
+    },
+    "length_buckets": {
+      "<=512": 43223,
+      "512-1024": 5802,
+      ">1024": 975
+    },
+    "docs_over_512": 6777,
+    "docs_over_lfull_cap_limit": 0,
+    "truncated_ratio_at_cap_limit": 0.0
+  },
+  "decision": {
+    "observed_max_tokens": 3270,
+    "lfull_max_length_cap": 4096,
+    "any_doc_truncated_in_lfull": false,
+    "truncated_ratio_in_lfull": 0.0,
+    "rule": "ADR 0006: max <= 4096 -> no document truncated; max > 4096 -> keep cap 4096 and report the truncated ratio"
+  }
+}
