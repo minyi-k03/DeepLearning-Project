@@ -10,11 +10,15 @@ backbone:
 runtime_lock:
   transformers_version: "5.23.0"   # T-02a 고정 (requirements.txt / pyproject / requirements.lock 일치)
   last_vector_is_final_norm: true  # 23번째 층 벡터 = final_norm(마지막 층 원출력) = last_hidden_state
-  # 확인: T-02a, scripts/check_runtime_lock.py → docs/measurements/runtime_check_cpu.json (2026-11-18,
-  #       CPU, sdpa·eager). GPU 서버에서 attn·compile 측정 시 같은 스크립트로 재확인.
-  attn_implementation: null        # "flash_attention_2" | "sdpa" (ADR 0005) — GPU 서버 측정 후 팀 결정
-  torch_compile: null              # true | false (ADR 0005) — GPU 서버 측정 후 팀 결정
-  # 측정: python scripts/check_runtime_lock.py --device cuda --attn sdpa flash_attention_2 \
+  # 확인: T-02a, scripts/check_runtime_lock.py → docs/measurements/runtime_check_cpu.json (CPU, sdpa·eager),
+  #       runtime_check_cuda.json (RTX 5090, sdpa compile 끔·켬) 모두 통과 (2026-11-18).
+  attn_implementation: "sdpa"      # ADR 0005. 팀 결정 2026-11-18 (PR #5, 고용민 승인)
+  torch_compile: false             # ADR 0005. 팀 결정 2026-11-18 (PR #5, 고용민 승인)
+  # 근거: flash_attention_2는 별도 패키지·fp16/bf16 필요로 이 환경에서 동작하지 않음.
+  #   compile: 백본 고정 조건은 백본을 캐시 생성 때 한 번만 실행해 이득이 거의 없고, compile은 실행 환경
+  #   (gcc·libc6-dev)에 의존해 실패 위험이 있음. 측정(forward만, 32×512 고정 길이, 1회)은 끔 0.1071초 /
+  #   켬 0.0971초. 파인튜닝(재현 트랙·T-08f)의 학습 시간은 T-08a에서 실측 후 필요하면 팀이 재검토(11/30 이전).
+  # 측정 명령: python scripts/check_runtime_lock.py --device cuda --attn sdpa flash_attention_2 \
   #         --compile off on --benchmark-steps 20
   cache_dtype: null                # "float32" | "float16" (MNLI train ~28GB fp32 / ~14GB fp16)
 
