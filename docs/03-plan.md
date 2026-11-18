@@ -142,7 +142,7 @@
 | ID | 상태 | 제목 | US | 마감 | 담당 | Blocked by | 완료 조건 | 확인 방법 | 공통 | 위험 | 병렬 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | T-01a | 🔄 **진행** (병합됨, 고용민 PC 확인 대기) | Python 환경·의존성 잠금, README 설치 절차 | — | 11/17(화) | 차가원 | — | 새 환경에서 README대로 설치 후 verify 통과 (transformers 버전은 T-02a에서 확정 후 잠금 갱신) | verify, 두 사람 컴퓨터에서 실행 | 예 | 보통 | ○ |
-| T-01b | 🔄 **진행** (CODEOWNERS 완료, main 보호·테스트 PR 대기) | git 저장소 초기화, main 보호, CODEOWNERS(AGENTS.md §4 공통 파일) | — | 11/16(월) | 차가원 | — | 기능 브랜치·PR 흐름 작동, 공통 파일에 리뷰어 지정 | 테스트 PR 1건 | 예 | 높음 | ○ |
+| T-01b | ✅ **완료** (CODEOWNERS·main 보호·PR 흐름 확인 완료) | git 저장소 초기화, main 보호, CODEOWNERS(AGENTS.md §4 공통 파일) | — | 11/16(월) | 차가원 | — | 기능 브랜치·PR 흐름 작동, 공통 파일에 리뷰어 지정 | 테스트 PR 1건 | 예 | 높음 | ○ |
 | T-01c | 👀 **리뷰 대기** (YongMin, 차가원 리뷰) | `contracts.py` 계약 검토·합의 (SPEC §데이터 형태와 필드 대조) | 52 | 11/17(화) | 고용민 (리뷰 차가원) | — | `RunConfig`·`ResultRecord`·`CacheMetadata`·`DecisionRules`가 SPEC 필드를 모두 담음 | verify, 상대 리뷰 | 예 | 높음 | ○ |
 | T-01d | ⬜ 대기 | 문서 정합성: ADR 0002 파일 누락 복구, ADR 0003 "SST-2 판정" 문구 정리 | — | 11/17(화) | 공통 | — | ADR 0001~0009 파일이 모두 있고 H4 표현이 ADR 0007·GLOSSARY와 일치 | 문서 리뷰 | 예 | 낮음 | ○ |
 
@@ -150,7 +150,7 @@
 
 | ID | 상태 | 제목 | US | 마감 | 담당 | Blocked by | 완료 조건 | 확인 방법 | 공통 | 위험 | 병렬 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| T-02a | 🔄 **진행** (feat/T-02a-runtime-lock: 버전 고정·최종 정규화 확인 완료, 어텐션·컴파일은 GPU 측정 대기) | transformers 5.x 버전·어텐션 구현·컴파일 설정 고정, `verify_final_norm_contract` 구현 | 24, 50 | 11/20(금) | 차가원 | T-01a | `week1_env.yaml` `runtime_lock` 채움, 23번째 층 벡터 = 최종 정규화 출력의 토큰 평균 확인 | `test_23_layer_vectors_and_final_norm_contract` un-skip | 예 | 높음 | ○ |
+| T-02a | 🔄 **진행** (Gawoun: CPU 검증 완료·코드 리뷰 대기, 어텐션·컴파일은 GPU 측정 대기) | transformers 5.x 버전·어텐션 구현·컴파일 설정 고정, `verify_final_norm_contract` 구현 | 24, 50 | 11/20(금) | 차가원 | T-01a | `week1_env.yaml` `runtime_lock` 채움, 23번째 층 벡터 = 최종 정규화 출력의 토큰 평균 확인 | `test_23_layer_vectors_and_final_norm_contract` un-skip | 예 | 높음 | ○ |
 | T-02b | ✅ **완료** (PR #3 병합) | IMDB 최대 토큰 길이 측정 → Lfull 상한·잘린 문서 비율 기록 | 15, 16 | 11/18(수) | 차가원 | T-01a | `imdb_length_check` 채움 (4,096 이하면 자르지 않음, 넘으면 4,096 + 비율) | 측정 스크립트 실행 로그 | 예 | 낮음 | ○ |
 | T-02c | ⬜ 대기 | 교수님 MNLI·SST-2 사용 승인 확인 | 10, 11 | 11/20(금) | 공통 | — | `dataset_approval` 채움. 거절 시 ADR 0003 비상 계획 적용 | 수동 (회신 기록) | 예 | 높음 | ○ |
 
@@ -301,7 +301,7 @@ T-01c ─┬─▶ T-03a ─┐                                           │   
 
 Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 세션 로그와 마지막 verify만 남긴다. 옛 `docs/progress.md`의 로그를 옮겼다(T-01c 항목에는 남은 결정 한 문장을 덧붙였다).
 
-**마지막 verify**: 2026-11-18 통과 (15 passed, 26 skipped)
+**마지막 verify**: 2026-11-18 Gawoun, Python 3.11 및 로컬 모델 캐시 사용 (17 passed, 25 skipped)
 
 - 2026-11-15 · 초기 스캐폴딩 생성: `SPEC.md`, `GLOSSARY.md`, `docs/adr/0001`–`0009`를 바탕으로 패키지 구조, 설정 템플릿, 테스트 스켈레톤, 하네스 파일 생성.
 - 2026-11-15 · T-01a(차가원): Python 3.11 venv, `requirements.lock`(uv, universal) 생성, 새 환경에서 잠금 파일 설치 후 `python scripts/verify.py` ALL PASSED(5 passed, 26 skipped). README 설치 절차 갱신.
@@ -309,3 +309,4 @@ Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 세션 
 - 2026-11-18 · T-01c(고용민): SPEC §데이터 형태와 `contracts.py` 대조. `RunConfig`·`ResultRecord`·`CacheMetadata`는 SPEC 필드를 모두 담음. `DecisionRules`에 `decision_rules.yaml`의 규칙 5개(`h1_target_fusion_rule`, `h5a_target_fusion_rule`, `core_comparisons_for_5_seeds`, `finetune_num_seeds`, `best_fusion_selection_rule`)가 타입 필드 없이 `extra`로만 들어가던 것을 `None` 기본값 필드로 추가(값은 TBD 그대로). `tests/test_contracts.py` 7개 추가. verify ALL PASSED(12 passed, 26 skipped). 팀 확인 필요: `lr_tuning_scores` 키가 JSON에서 문자열이 됨(T-06b), `early_stopping_patience`가 int로 가정됨, `validate_metadata_match`가 SPEC 4항목보다 엄격(차가원 확인). 추가로 남은 범위: 가설별 `type`/`priority`(확증/탐색 구분)는 `DecisionRules` 타입 필드가 없음 — 계약에 넣을지 판정 로더가 YAML을 직접 읽을지 결정 필요.
 - 2026-11-18 · T-01c 교차검증 반영(고용민): 다른 에이전트의 코드리뷰를 실제 파일과 대조해 타당한 항목만 반영. (1) `h1_target_fusion_rule`·`h5a_target_fusion_rule`·`core_comparisons_for_5_seeds`·`best_fusion_selection_rule` 타입을 `str`/`list[str]`에서 `Any | None`으로 완화(SPEC §11/30이 대표 방식 하나인지 여러 방식인지 열어 둠, 값은 `None` 그대로). (2) `tests/test_contracts.py` `SPEC_FIELDS`에 SPEC §11/30 고정 항목 7개와 `token_length`·`length_bucket`·`truncated_doc_ratio`(US 16·17) 추가. 반영하지 않음: `genre_split` 검사(SPEC에 해당 필드 없음), `hypotheses` type/priority(위 T-01c 항목의 미결정 사항 그대로, 팀 결정 필요). §7의 `DecisionRules` 5필드 행이 옛 상태("`contracts.py`에 필드 없음")로 남아 있어, 사용자 요청에 따라 현재 상태(필드 추가됨, 타입 임시, `hypotheses` type/priority 미결정)로 고침.
 - 2026-11-18 · 진행 관리 통합(고용민): `docs/progress.md`를 폐지하고 Task별 상태를 이 문서 §4의 "상태" 열과 이 절로 합침. AGENTS.md §3·CLAUDE.md·README의 참조를 고침. 팀 확인 필요: 아직 병합되지 않은 브랜치(`feat/T-02a-runtime-lock` 등)가 옛 `progress.md`를 수정해 두었으면 병합 때 충돌하며, 그때는 삭제를 받아들이고 해당 상태·로그를 이 문서에 옮긴다.
+- 2026-11-18 · T-02a(차가원): `check_final_norm_contract`/`verify_final_norm_contract`·`masked_token_mean` 구현, `scripts/check_runtime_lock.py`로 CPU 확인 → `docs/measurements/runtime_check_cpu.json`. hidden_states 23개, 마지막 값 = `final_norm(마지막 층 원출력)` = `last_hidden_state`(층 노름 21·22층 ≈ 3,760 vs 23번째 ≈ 27). `transformers==5.23.0` 고정(lock 변화 없음). Seam ③ 첫 테스트 un-skip(가중치가 로컬 캐시에 없으면 skip). attn·compile은 GPU 서버 측정 대기. 참고: ADR 0005가 근거로 든 `tie_last_hidden_states` 속성은 5.23.0 config에 없음 — 동작은 동일, 팀 보고.

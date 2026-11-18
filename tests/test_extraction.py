@@ -7,11 +7,57 @@ import pytest
 
 pytestmark = pytest.mark.extraction
 
+MODEL_NAME = "answerdotai/ModernBERT-base"
 
-@pytest.mark.skip(reason="TODO(T-02/T-04): Requires locked transformers 5.x + ModernBERT-base")
+
+def _require_local_modernbert() -> None:
+    """Skip unless torch/transformers are installed and weights are already in the HF cache.
+
+    verify.py must not trigger a network download, so Seam 3 runs only where the model
+    has been fetched once (e.g. via scripts/check_runtime_lock.py).
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from huggingface_hub import try_to_load_from_cache
+
+    if not isinstance(try_to_load_from_cache(MODEL_NAME, "model.safetensors"), str):
+        pytest.skip(f"{MODEL_NAME} weights not in local HF cache")
+
+
+def test_masked_token_mean_ignores_padding_positions() -> None:
+    """Padding positions do not change the pooled vector, whatever their values are."""
+    torch = pytest.importorskip("torch")
+    from layer_fusion.extraction import masked_token_mean
+
+    hidden = torch.zeros(2, 4, 3)
+    hidden[0, :2] = torch.tensor([[1.0, 2.0, 3.0], [3.0, 4.0, 5.0]])
+    hidden[1, :4] = 1.0
+    mask = torch.tensor([[1, 1, 0, 0], [1, 1, 1, 1]])
+
+    pooled = masked_token_mean(hidden, mask)
+    hidden[0, 2:] = 1e6  # garbage in padding slots
+    pooled_garbage = masked_token_mean(hidden, mask)
+
+    assert torch.allclose(pooled[0], torch.tensor([2.0, 3.0, 4.0]))
+    assert torch.allclose(pooled[1], torch.ones(3))
+    assert torch.equal(pooled, pooled_garbage)
+
+
 def test_23_layer_vectors_and_final_norm_contract() -> None:
     """23 vectors per doc and slot 22 matches final-normed token-mean output."""
-    raise NotImplementedError
+    _require_local_modernbert()
+    from layer_fusion.extraction import check_final_norm_contract, verify_final_norm_contract
+
+    report = check_final_norm_contract(MODEL_NAME, attn_implementation="sdpa", device="cpu")
+
+    assert report["num_hidden_states"] == 23
+    assert report["last_equals_final_norm_of_raw"] is True
+    assert report["last_equals_last_hidden_state"] is True
+    assert report["token_mean_matches"] is True
+    # Slot 22 must be the normed output, not the raw (pre-norm-scale) last layer output.
+    assert report["last_equals_raw"] is False
+    assert report["passed"] is True
+    assert verify_final_norm_contract(MODEL_NAME, attn_implementation="sdpa") is True
 
 
 @pytest.mark.skip(reason="TODO(T-04): Requires ModernBERT-base extraction")

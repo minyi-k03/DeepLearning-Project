@@ -1,0 +1,119 @@
+{
+  "task": "T-02a",
+  "measured_on": "2026-11-18",
+  "model_name": "answerdotai/ModernBERT-base",
+  "environment": {
+    "python": "3.11.15",
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "torch": "2.15.0",
+    "transformers": "5.23.0",
+    "cuda_available": false
+  },
+  "results": [
+    {
+      "attn_implementation": "sdpa",
+      "torch_compile": false,
+      "contract": {
+        "model_name": "answerdotai/ModernBERT-base",
+        "transformers_version": "5.23.0",
+        "torch_version": "2.15.0",
+        "device": "cpu",
+        "attn_implementation": "sdpa",
+        "torch_compile": false,
+        "atol": 1e-05,
+        "num_docs": 3,
+        "num_hidden_states": 23,
+        "expected_hidden_states": 23,
+        "last_equals_final_norm_of_raw": true,
+        "last_equals_last_hidden_state": true,
+        "last_equals_raw": false,
+        "token_mean_matches": true,
+        "slot_mean_norms": [
+          5.76,
+          20.66,
+          32.34,
+          47.69,
+          51.22,
+          125.42,
+          130.83,
+          132.8,
+          140.95,
+          150.93,
+          88.13,
+          91.91,
+          1223.61,
+          1226.04,
+          1230.35,
+          1238.08,
+          3642.17,
+          3664.77,
+          3703.87,
+          3725.62,
+          3756.67,
+          3791.33,
+          27.17
+        ],
+        "passed": true
+      },
+      "benchmark": {
+        "steps": 3,
+        "batch_size": 8,
+        "seq_len": 512,
+        "mean_forward_sec": 0.4978
+      }
+    },
+    {
+      "attn_implementation": "eager",
+      "torch_compile": false,
+      "contract": {
+        "model_name": "answerdotai/ModernBERT-base",
+        "transformers_version": "5.23.0",
+        "torch_version": "2.15.0",
+        "device": "cpu",
+        "attn_implementation": "eager",
+        "torch_compile": false,
+        "atol": 1e-05,
+        "num_docs": 3,
+        "num_hidden_states": 23,
+        "expected_hidden_states": 23,
+        "last_equals_final_norm_of_raw": true,
+        "last_equals_last_hidden_state": true,
+        "last_equals_raw": false,
+        "token_mean_matches": true,
+        "slot_mean_norms": [
+          5.76,
+          20.66,
+          32.34,
+          47.69,
+          51.22,
+          125.42,
+          130.83,
+          132.8,
+          140.95,
+          150.93,
+          88.13,
+          91.91,
+          1223.61,
+          1226.04,
+          1230.35,
+          1238.08,
+          3642.17,
+          3664.77,
+          3703.87,
+          3725.62,
+          3756.66,
+          3791.33,
+          27.17
+        ],
+        "passed": true
+      },
+      "benchmark": {
+        "steps": 3,
+        "batch_size": 8,
+        "seq_len": 512,
+        "mean_forward_sec": 0.6682
+      }
+    }
+  ],
+  "all_contracts_passed": true
+}

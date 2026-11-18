@@ -29,7 +29,7 @@
 **Python 3.11**을 사용합니다(CI와 동일, `.python-version`). 3.13 이상은 torch 등 일부 패키지 호환을 보장하지 않습니다.
 
 ```bash
-python3.11 -m venv .venv
+python3.11 -m venv .venv             # Windows(python.org 설치)에서 안 되면: py -3.11 -m venv .venv
 # Linux/macOS: source .venv/bin/activate
 # Windows:     .venv\Scripts\activate
 python -m pip install --upgrade pip

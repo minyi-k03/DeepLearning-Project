@@ -8,10 +8,14 @@ backbone:
   hidden_size: 768
 
 runtime_lock:
-  transformers_version: null       # 5.x 중 고정 버전 (Week 1 확인)
-  last_vector_is_final_norm: null  # 23번째 층 벡터가 최종 정규화 출력인지 검증 결과 (true/false)
-  attn_implementation: null        # "flash_attention_2" | "sdpa" (ADR 0005)
-  torch_compile: null              # true | false (ADR 0005)
+  transformers_version: "5.23.0"   # T-02a 고정 (requirements.txt / pyproject / requirements.lock 일치)
+  last_vector_is_final_norm: true  # 23번째 층 벡터 = final_norm(마지막 층 원출력) = last_hidden_state
+  # 확인: T-02a, scripts/check_runtime_lock.py → docs/measurements/runtime_check_cpu.json (2026-11-18,
+  #       CPU, sdpa·eager). GPU 서버에서 attn·compile 측정 시 같은 스크립트로 재확인.
+  attn_implementation: null        # "flash_attention_2" | "sdpa" (ADR 0005) — GPU 서버 측정 후 팀 결정
+  torch_compile: null              # true | false (ADR 0005) — GPU 서버 측정 후 팀 결정
+  # 측정: python scripts/check_runtime_lock.py --device cuda --attn sdpa flash_attention_2 \
+  #         --compile off on --benchmark-steps 20
   cache_dtype: null                # "float32" | "float16" (MNLI train ~28GB fp32 / ~14GB fp16)
 
 imdb_length_check:
