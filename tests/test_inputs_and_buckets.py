@@ -101,10 +101,14 @@ def test_mnli_pair_is_single_sep_joined_input() -> None:
     assert out["truncated"] == [False]
 
 
-def test_lfull_requires_cap_and_refuses_undecided_over_cap_truncation() -> None:
-    with pytest.raises(ValueError, match="cap"):
+def test_lfull_requires_cap() -> None:
+    with pytest.raises(ValueError, match="lfull_max_length_cap"):
         build_tokenized_inputs([_doc(10)], FakeTokenizer(), InputSetting.LFULL)
-    with pytest.raises(ValueError, match="ADR 0006"):
+
+
+def test_lfull_over_cap_raises_because_kept_part_is_undecided() -> None:
+    """ADR 0006 keeps the cap but not which part to keep; refuse instead of guessing."""
+    with pytest.raises(ValueError, match="which part to keep"):
         build_tokenized_inputs([_doc(5000)], FakeTokenizer(), InputSetting.LFULL, 4096)
 
 

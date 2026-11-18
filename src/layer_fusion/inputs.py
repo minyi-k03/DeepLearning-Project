@@ -1,4 +1,4 @@
-"""Input construction: MNLI [SEP] pairing, IMDB head+tail truncation, buckets, view ratio."""
+"""Input construction: MNLI [SEP] pairing, IMDB 앞+뒤 자르기 (ADR 0006), buckets, view ratio."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def build_tokenized_inputs(
     input_setting: InputSetting | None = None,
     lfull_max_length_cap: int | None = None,
 ) -> dict[str, Any]:
-    """Tokenize documents: [SEP]-joined pairs for MNLI, head+tail truncation for IMDB.
+    """Tokenize documents: [SEP]-joined pairs for MNLI, 앞+뒤 자르기 for IMDB (GLOSSARY).
 
     Returns unpadded per-document token ids (padding happens when batching in T-04b) plus
     ``token_lengths`` (before truncation, special tokens included), ``input_lengths``
@@ -71,8 +71,10 @@ def build_tokenized_inputs(
       never truncated (SPEC US 2).
     - L128 / L512: keep the first ``head`` and last ``tail`` content tokens so the total with
       special tokens is exactly 128 / 512 (ADR 0006, SPEC US 13).
-    - Lfull: no truncation up to ``lfull_max_length_cap``. How to cut a document above the cap
-      is not decided in ADR 0006, so such a document raises instead of guessing.
+    - Lfull: no truncation up to ``lfull_max_length_cap``. ADR 0006 keeps the 4,096 cap and
+      asks for the truncated-document ratio, but does not say which part of a longer document
+      to keep, so such a document raises instead of guessing (team agreement on PR #8; the
+      observed IMDB maximum is 3,270 tokens).
     """
     if input_setting is InputSetting.LFULL and lfull_max_length_cap is None:
         raise ValueError("Lfull requires lfull_max_length_cap (configs/week1_env.yaml)")
@@ -104,11 +106,14 @@ def build_tokenized_inputs(
         elif input_setting is InputSetting.LFULL and len(full) > lfull_max_length_cap:
             raise ValueError(
                 f"{record.doc_id!r} has {len(full)} tokens > Lfull cap {lfull_max_length_cap}; "
-                "the truncation rule above the cap is not decided in ADR 0006"
+                "ADR 0006 keeps the cap but does not decide which part to keep"
             )
 
         doc_ids.append(record.doc_id)
-        token_lengths.append(len(ids_a) + 2 if record.text_b is None else len(full))
+        # Untruncated length with special tokens. Paired inputs (MNLI) are never cut, so `full`
+        # is already untruncated there; single texts may have been cut, so rebuild from ids_a.
+        untruncated_len = len(full) if record.text_b is not None else len(ids_a) + 2
+        token_lengths.append(untruncated_len)
         input_ids.append(full)
         truncated.append(cut)
 

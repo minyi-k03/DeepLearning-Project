@@ -99,7 +99,20 @@ def test_imdb_head_tail_truncation_lengths() -> None:
         assert ids[1 : 1 + head] == content[:head]
         assert ids[1 + head : -1] == content[-tail:]
 
-    # MNLI: the manual [CLS] a [SEP] b [SEP] equals the tokenizer's own pair encoding.
+
+def test_mnli_pair_matches_real_tokenizer_pair_encoding() -> None:
+    """The manual [CLS] a [SEP] b [SEP] equals ModernBERT's own pair encoding (SPEC US 2)."""
+    pytest.importorskip("transformers")
+    from huggingface_hub import try_to_load_from_cache
+
+    if not isinstance(try_to_load_from_cache(MODEL_NAME, "tokenizer.json"), str):
+        pytest.skip(f"{MODEL_NAME} tokenizer not in local HF cache")
+    from transformers import AutoTokenizer
+
+    from layer_fusion.contracts import DocumentRecord
+    from layer_fusion.inputs import build_tokenized_inputs
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     premise, hypothesis = "A man is playing a guitar on stage.", "Someone performs music."
     pair = DocumentRecord(doc_id="mnli-0", text_a=premise, label=0, text_b=hypothesis)
     built = build_tokenized_inputs([pair], tokenizer)["input_ids"][0]
