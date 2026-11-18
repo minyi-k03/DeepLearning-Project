@@ -141,7 +141,7 @@
 
 | ID | 상태 | 제목 | US | 마감 | 담당 | Blocked by | 완료 조건 | 확인 방법 | 공통 | 위험 | 병렬 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| T-01a | 🔄 **진행** (병합됨, 고용민 PC 확인 대기) | Python 환경·의존성 잠금, README 설치 절차 | — | 11/17(화) | 차가원 | — | 새 환경에서 README대로 설치 후 verify 통과 (transformers 버전은 T-02a에서 확정 후 잠금 갱신) | verify, 두 사람 컴퓨터에서 실행 | 예 | 보통 | ○ |
+| T-01a | ✅ **완료** (PR #2 병합, 차가원 Mac·GPU 서버·고용민 PC 확인) | Python 환경·의존성 잠금, README 설치 절차 | — | 11/17(화) | 차가원 | — | 새 환경에서 README대로 설치 후 verify 통과 (transformers 버전은 T-02a에서 확정 후 잠금 갱신) | verify, 두 사람 컴퓨터에서 실행 | 예 | 보통 | ○ |
 | T-01b | ✅ **완료** (CODEOWNERS·main 보호·PR 흐름 확인 완료) | git 저장소 초기화, main 보호, CODEOWNERS(AGENTS.md §4 공통 파일) | — | 11/16(월) | 차가원 | — | 기능 브랜치·PR 흐름 작동, 공통 파일에 리뷰어 지정 | 테스트 PR 1건 | 예 | 높음 | ○ |
 | T-01c | 👀 **리뷰 대기** (YongMin, 차가원 리뷰) | `contracts.py` 계약 검토·합의 (SPEC §데이터 형태와 필드 대조) | 52 | 11/17(화) | 고용민 (리뷰 차가원) | — | `RunConfig`·`ResultRecord`·`CacheMetadata`·`DecisionRules`가 SPEC 필드를 모두 담음 | verify, 상대 리뷰 | 예 | 높음 | ○ |
 | T-01d | ⬜ 대기 | 문서 정합성: ADR 0002 파일 누락 복구, ADR 0003 "SST-2 판정" 문구 정리 | — | 11/17(화) | 공통 | — | ADR 0001~0009 파일이 모두 있고 H4 표현이 ADR 0007·GLOSSARY와 일치 | 문서 리뷰 | 예 | 낮음 | ○ |
@@ -311,3 +311,4 @@ Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 세션 
 - 2026-11-18 · 진행 관리 통합(고용민): `docs/progress.md`를 폐지하고 Task별 상태를 이 문서 §4의 "상태" 열과 이 절로 합침. AGENTS.md §3·CLAUDE.md·README의 참조를 고침. 팀 확인 필요: 아직 병합되지 않은 브랜치(`feat/T-02a-runtime-lock` 등)가 옛 `progress.md`를 수정해 두었으면 병합 때 충돌하며, 그때는 삭제를 받아들이고 해당 상태·로그를 이 문서에 옮긴다.
 - 2026-11-18 · T-02a(차가원): `check_final_norm_contract`/`verify_final_norm_contract`·`masked_token_mean` 구현, `scripts/check_runtime_lock.py`로 CPU 확인 → `docs/measurements/runtime_check_cpu.json`. hidden_states 23개, 마지막 값 = `final_norm(마지막 층 원출력)` = `last_hidden_state`(층 노름 21·22층 ≈ 3,760 vs 23번째 ≈ 27). `transformers==5.23.0` 고정(lock 변화 없음). Seam ③ 첫 테스트 un-skip(가중치가 로컬 캐시에 없으면 skip). attn·compile은 GPU 서버 측정 대기. 참고: ADR 0005가 근거로 든 `tie_last_hidden_states` 속성은 5.23.0 config에 없음 — 동작은 동일, 팀 보고.
 - 2026-11-18 · T-02a GPU 측정(차가원): 공용 서버 metis(RTX 5090, torch 2.15.0+cu132)의 개인 개발 컨테이너에서 `scripts/check_runtime_lock.py --device cuda --attn sdpa flash_attention_2 --compile off on --benchmark-steps 20` 실행 → `docs/measurements/runtime_check_cuda.json`. sdpa는 compile 끔/켬 모두 최종 정규화 계약 통과(23개, 마지막 = `final_norm(원출력)`), forward(32×512, fp32) 평균 0.1071초 / 0.0971초(compile이 약 9% 빠름). flash_attention_2는 패키지 미설치로 측정 불가. Seam ③ 최종 정규화 테스트 서버에서도 PASSED. compile 켬은 처음에 `stdlib.h` 없음으로 실패 → devcontainer에 `libc6-dev` 추가(`209d435`). `attn_implementation`·`torch_compile` 값은 팀 결정 대기(`week1_env.yaml`은 아직 null).
+- 2026-11-18 · T-01a 완료(차가원): 고용민 PC에서 README 절차대로 설치 후 verify 통과 확인(팀원 보고). 차가원 Mac(11/15·11/18), GPU 서버 컨테이너(11/18)와 함께 완료 조건 충족. Windows용 `py -3.11` 안내는 PR #5에 포함.
