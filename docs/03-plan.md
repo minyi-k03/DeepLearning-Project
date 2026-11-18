@@ -167,7 +167,7 @@
 | ID | 상태 | 제목 | US | 마감 | 담당 | Blocked by | 완료 조건 | 확인 방법 | 공통 | 위험 | 병렬 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | T-04a | ✅ **완료** (PR #8 병합: 가짜 공급원·실행 전 설정 검사) | 공급원 인터페이스 확정, `FakeLayerVectorProvider.make_synthetic`, 생성 설정 불일치 오류 | 26 | 11/19(목) | 차가원 | T-01c | 가짜 공급원으로 실행 seam 테스트를 작성할 수 있음, 설정이 다르면 `CacheConfigMismatchError` | `test_mismatched_provider_metadata_raises_error` un-skip | 예 | 보통 | ○ |
-| T-04b | ⬜ 대기 | 층 벡터 추출기·캐시 writer·`CacheProvider`: [N, 23, 768] + doc_id·라벨 순서 + 생성 설정(모델·버전·길이·자르기 방식) | 21–23, 25, 27 | 11/24(화) | 차가원 | T-02a, T-03b | 패딩 제외 평균, 짧은 문서는 L512 = Lfull, 순서 일치 | Seam ③ 나머지 5개 un-skip (`tests/test_extraction.py`) | 아니오 | 높음 | — |
+| T-04b | 🔄 **진행** (PR 1: 추출기·캐시 writer·`CacheProvider`, Seam ③ 전부 통과 / PR 2 남음: CLI·float16 실측·`week1_env.yaml`) | 층 벡터 추출기·캐시 writer·`CacheProvider`: [N, 23, 768] + doc_id·라벨 순서 + 생성 설정(모델·버전·길이·자르기 방식) | 21–23, 25, 27 | 11/24(화) | 차가원 | T-02a, T-03b | 패딩 제외 평균, 짧은 문서는 L512 = Lfull, 순서 일치 | Seam ③ 나머지 5개 un-skip (`tests/test_extraction.py`) | 아니오 | 높음 | — |
 
 ### T-05 결합 헤드 — ⬜ 대기
 
@@ -322,3 +322,4 @@ Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 세션 
 - 2026-11-18 · T-03b·T-04a 완료(차가원): PR #8 고용민 승인 후 병합(`aee4f10`). /code-review(표준·명세) 반영분 포함. T-04b로 넘긴 항목: `TokenizedInputs` 데이터클래스, `truncation_rule` 문자열 형식 확인, 문서별 시야 비율, 데이터셋 필드·IMDB `input_setting` 검사(계약 변경), `expected_cache_meta` 필수 규칙 SPEC 반영, `cache_dtype`·`include_special_tokens_in_pool` 기록.
 - 2026-11-18 · T-01d 완료 표시(차가원, 담당 공통): PR #9(고용민) 병합 확인 후 상태 ✅, T-01 묶음 제목 ✅로 갱신.
 - 2026-11-18 · 규칙 추가(차가원·고용민 합의): 상태가 PR 병합보다 한 단계씩 늦게 main에 반영되던 문제(T-01d·T-03b·T-04a) 때문에, §0에 "상태 변경은 Task를 끝내는 PR 안에 함께 넣는다" 규칙을 추가. §0은 사람만 고치는 부분이라 두 사람 합의를 근거로 수정.
+- 2026-11-19 · T-04b PR 1(차가원): `TokenizedInputs` 데이터클래스·배치 토크나이징·문서별 시야 비율(US 18), `extract_layer_vectors`(층마다 즉시 패딩 제외 평균, 길이순 배치 후 원래 순서 복원, memmap 출력 가능, 고정 transformers 버전 확인, float16 범위 검사·왕복 오차 보고), `save_layer_cache`(`<dir>/metadata.json` + `<split>/vectors.npy` 등, `<split>.partial`에 쓰고 성공 시 이름 변경, 기존 분할 덮어쓰기 거부), `CacheProvider`(memmap 로드). `max_length_cap`은 설정별 고정값(128/512/상한). `make_synthetic`은 train/eval 외 split 거부(PR #11 합의). Seam ③ 남은 4개 un-skip, `/code-review` 반영. verify ALL PASSED(62 passed, 18 skipped). **PR 2(데이터 모듈 PR #11 병합 후)**: `scripts/extract_cache.py`, float16 범위 실측, `week1_env.yaml`의 `cache_dtype`·`include_special_tokens_in_pool` 기록, 시야 비율·토큰 길이 저장.
