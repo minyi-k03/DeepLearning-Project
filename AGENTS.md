@@ -18,7 +18,7 @@
 - Preserve existing user changes and report critical ambiguities rather than inventing requirements.
 
 ## 4. Collaboration and Architecture Rules
-- Work on a feature branch (`feat/<task-id>-<name>`); never commit directly to `main`.
+- Work on your own personal branch, not a per-Task branch: 고용민 → `YongMin`, 차가원 → `Gawoun`. Commit and push Task work to that branch, put the Task ID in the commit message (e.g. `feat(T-01c): ...`), and never commit directly to `main`. Reach `main` only through a PR.
 - Shared/high-risk files (`docs/SPEC.md`, `GLOSSARY.md`, `AGENTS.md`, `configs/`, `src/layer_fusion/contracts.py`, `src/layer_fusion/layers.py`, `src/layer_fusion/judgment.py`, `scripts/verify.py`) require teammate review before merging.
 - Update contracts in `docs/SPEC.md` / `src/layer_fusion/contracts.py` and tests before changing dependent modules.
 - Keep Execution seam (`src/layer_fusion/runner.py`) and Judgment seam (`src/layer_fusion/judgment.py`) CPU-testable with fake providers / synthetic records.
