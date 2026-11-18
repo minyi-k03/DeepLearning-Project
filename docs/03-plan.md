@@ -143,7 +143,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | T-01a | 🔄 **진행** (병합됨, 고용민 PC 확인 대기) | Python 환경·의존성 잠금, README 설치 절차 | — | 11/17(화) | 차가원 | — | 새 환경에서 README대로 설치 후 verify 통과 (transformers 버전은 T-02a에서 확정 후 잠금 갱신) | verify, 두 사람 컴퓨터에서 실행 | 예 | 보통 | ○ |
 | T-01b | 🔄 **진행** (CODEOWNERS 완료, main 보호·테스트 PR 대기) | git 저장소 초기화, main 보호, CODEOWNERS(AGENTS.md §4 공통 파일) | — | 11/16(월) | 차가원 | — | 기능 브랜치·PR 흐름 작동, 공통 파일에 리뷰어 지정 | 테스트 PR 1건 | 예 | 높음 | ○ |
-| T-01c | 👀 **리뷰 대기** (YongMin, 차가원 리뷰) | `contracts.py` 계약 검토·합의 (SPEC §데이터 형태와 필드 대조) | 52 | 11/17(화) | 고용민 (리뷰 차가원) | — | `RunConfig`·`ResultRecord`·`CacheMetadata`·`DecisionRules`가 SPEC 필드를 모두 담음 | verify, 상대 리뷰 | 예 | 높음 | ○ |
+| T-01c | ✅ **완료** (PR #4 병합) | `contracts.py` 계약 검토·합의 (SPEC §데이터 형태와 필드 대조) | 52 | 11/17(화) | 고용민 (리뷰 차가원) | — | `RunConfig`·`ResultRecord`·`CacheMetadata`·`DecisionRules`가 SPEC 필드를 모두 담음 | verify, 상대 리뷰 | 예 | 높음 | ○ |
 | T-01d | ⬜ 대기 | 문서 정합성: ADR 0002 파일 누락 복구, ADR 0003 "SST-2 판정" 문구 정리 | — | 11/17(화) | 공통 | — | ADR 0001~0009 파일이 모두 있고 H4 표현이 ADR 0007·GLOSSARY와 일치 | 문서 리뷰 | 예 | 낮음 | ○ |
 
 ### T-02 환경 확인 (11/16–11/22) — 🔄 **진행**
