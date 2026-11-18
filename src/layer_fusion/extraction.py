@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from layer_fusion.providers import (
     DOC_IDS_FILE,
     GENRE_SPLITS_FILE,
     LABELS_FILE,
+    PARTIAL_SUFFIX,
     TOKEN_LENGTHS_FILE,
     VECTORS_FILE,
     CacheConfigMismatchError,
@@ -30,8 +32,6 @@ from layer_fusion.providers import (
 )
 
 FLOAT16_MAX = float(np.finfo(np.float16).max)  # 65,504
-# Refuse float16 storage well before overflow: rounding near the top of the range is coarse.
-FLOAT16_SAFE_LIMIT = FLOAT16_MAX / 2
 
 # Short inputs of different lengths so the check runs on a padded batch.
 DEFAULT_CONTRACT_TEXTS: tuple[str, ...] = (
@@ -45,7 +45,8 @@ def masked_token_mean(hidden: Any, attention_mask: Any) -> Any:
     """Mean over tokens where ``attention_mask`` is 1: [B, T, H] x [B, T] -> [B, H].
 
     Padding positions are excluded (SPEC US 23). Whether special tokens are pooled is decided
-    by the caller through the mask (``include_special_tokens_in_pool``, team decision: true).
+    by the caller through the mask (``include_special_tokens_in_pool``: agreed as true on PR #8,
+    docs/03-plan.md §8; becomes final when configs/week1_env.yaml is filled in T-04b PR 2).
     """
     mask = attention_mask.to(hidden.dtype).unsqueeze(-1)
     summed = (hidden * mask).sum(dim=1)
@@ -146,11 +147,11 @@ def verify_final_norm_contract(
 
 
 def check_float16_range(max_abs: float) -> None:
-    """Raise if layer-vector values are too large to store safely as float16."""
-    if max_abs > FLOAT16_SAFE_LIMIT:
+    """Raise if layer-vector values do not fit float16 (precision is reported, not judged)."""
+    if max_abs > FLOAT16_MAX:
         raise ValueError(
-            f"max |value| {max_abs:.1f} exceeds the float16 safety limit {FLOAT16_SAFE_LIMIT:.0f} "
-            f"(float16 max {FLOAT16_MAX:.0f}); store this cache as float32 instead"
+            f"max |value| {max_abs:.1f} exceeds the float16 maximum {FLOAT16_MAX:.0f}; "
+            "store this cache as float32 instead"
         )
 
 
@@ -199,7 +200,9 @@ def extract_layer_vectors(
     Documents are batched longest-first to limit padding and written back in the original
     record order (US 27). Each of the 23 hidden states is pooled right away, so memory stays
     O(batch x length x 768) even for Lfull. ``out`` may be a pre-allocated array such as an
-    ``np.lib.format.open_memmap`` so the MNLI train cache never has to fit in RAM.
+    ``np.lib.format.open_memmap`` so the MNLI train cache never has to fit in RAM. A float16
+    range error stops extraction mid-way, so a caller writing ``out`` to disk should write to a
+    temporary path and keep it only on success (the T-04b PR 2 CLI does this).
     ``include_special_tokens_in_pool`` must be given explicitly (configs/week1_env.yaml).
     """
     import torch
@@ -263,12 +266,14 @@ def extract_layer_vectors(
 
             batch_max = float(np.abs(pooled).max())
             max_abs = max(max_abs, batch_max)
+            # Measured for float32 runs too: the float16 decision is made from such a run.
+            with np.errstate(over="ignore"):
+                as_fp16 = pooled.astype(np.float16)
+            max_fp16_error = max(
+                max_fp16_error, float(np.abs(as_fp16.astype(np.float32) - pooled).max())
+            )
             if dtype == "float16":
                 check_float16_range(batch_max)
-                as_fp16 = pooled.astype(np.float16)
-                max_fp16_error = max(
-                    max_fp16_error, float(np.abs(as_fp16.astype(np.float32) - pooled).max())
-                )
                 out[idx] = as_fp16
             else:
                 out[idx] = pooled
@@ -287,7 +292,7 @@ def extract_layer_vectors(
     report = {
         "num_docs": n_docs,
         "max_abs_value": round(max_abs, 4),
-        "float16_round_trip_max_error": round(max_fp16_error, 6) if dtype == "float16" else None,
+        "float16_round_trip_max_error": round(max_fp16_error, 6),
         "max_input_length": max(tokenized.input_lengths, default=0),
         "truncated_doc_ratio": tokenized.truncated_doc_ratio,
     }
@@ -315,7 +320,8 @@ def save_layer_cache(
     """Save one split of a layer-vector cache: ``<output_dir>/<split>/vectors.npy`` + index files.
 
     ``<output_dir>/metadata.json`` holds the CacheMetadata shared by every split. A directory
-    built under other metadata is rejected, and an existing split is never overwritten
+    built under other metadata is rejected, an existing split (or a ``.partial`` left by a failed
+    run) is never overwritten, and files appear under ``<split>`` only once all are written
     (AGENTS.md §7). Returns the split directory.
     """
     output_dir = Path(output_dir)
@@ -340,20 +346,35 @@ def save_layer_cache(
                 f"{output_dir} already holds a cache built with {existing}, not {metadata}"
             )
     split_dir = output_dir / split_name
-    if (split_dir / VECTORS_FILE).exists():
-        raise FileExistsError(f"{split_dir} already has a cache; refusing to overwrite")
+    partial_dir = output_dir / f"{split_name}{PARTIAL_SUFFIX}"
+    for existing_dir in (split_dir, partial_dir):
+        if existing_dir.exists():
+            raise FileExistsError(
+                f"{existing_dir} already exists (complete or left by a failed run); "
+                "refusing to overwrite — inspect and remove it by hand if it is stale"
+            )
 
-    split_dir.mkdir(parents=True, exist_ok=True)
+    # Write everything into <split>.partial and rename only when all files are written, so a
+    # failed save never leaves something that looks like a usable cache (AGENTS.md §7).
+    output_dir.mkdir(parents=True, exist_ok=True)
+    partial_dir.mkdir()
+    try:
+        np.save(partial_dir / VECTORS_FILE, np.asarray(vectors))
+        (partial_dir / DOC_IDS_FILE).write_text(json.dumps(list(doc_ids)), encoding="utf-8")
+        np.save(partial_dir / LABELS_FILE, np.asarray(labels, dtype=np.int64))
+        if token_lengths is not None:
+            np.save(partial_dir / TOKEN_LENGTHS_FILE, np.asarray(token_lengths, dtype=np.int64))
+        if genre_splits is not None:
+            (partial_dir / GENRE_SPLITS_FILE).write_text(
+                json.dumps(list(genre_splits)), encoding="utf-8"
+            )
+    except BaseException:
+        shutil.rmtree(partial_dir, ignore_errors=True)  # only the folder this call created
+        raise
     if not meta_path.is_file():
         meta_path.write_text(
             json.dumps(cache_metadata_to_dict(metadata), indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-    np.save(split_dir / VECTORS_FILE, np.asarray(vectors))
-    (split_dir / DOC_IDS_FILE).write_text(json.dumps(list(doc_ids)), encoding="utf-8")
-    np.save(split_dir / LABELS_FILE, np.asarray(labels, dtype=np.int64))
-    if token_lengths is not None:
-        np.save(split_dir / TOKEN_LENGTHS_FILE, np.asarray(token_lengths, dtype=np.int64))
-    if genre_splits is not None:
-        (split_dir / GENRE_SPLITS_FILE).write_text(json.dumps(list(genre_splits)), encoding="utf-8")
+    partial_dir.rename(split_dir)
     return split_dir

@@ -101,10 +101,39 @@ def test_unknown_split_and_missing_cache_raise(tmp_path) -> None:
         CacheProvider(str(tmp_path)).get_split("eval")
 
 
-def test_float16_range_check() -> None:
-    check_float16_range(3_791.3)
+def test_float16_range_check_uses_the_float16_maximum() -> None:
+    """No extra safety margin beyond the float16 range (precision is reported separately)."""
+    check_float16_range(60_000.0)
     with pytest.raises(ValueError, match="float16"):
         check_float16_range(70_000.0)
+
+
+def test_any_existing_split_directory_blocks_saving(tmp_path) -> None:
+    """A split left half-written (index files but no vectors) is not silently overwritten."""
+    (tmp_path / "train").mkdir()
+    (tmp_path / "train" / "doc_ids.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        save_layer_cache(tmp_path, "train", _vectors(1), ["a"], [0], _meta())
+
+
+def test_failed_save_leaves_no_split_behind(tmp_path, monkeypatch) -> None:
+    """Writes go to a temporary folder that only becomes <split> when every file is written."""
+    import layer_fusion.extraction as extraction
+
+    real_save = np.save
+    calls = {"n": 0}
+
+    def flaky_save(path, array):  # vectors.npy succeeds, labels.npy fails
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disk full")
+        real_save(path, array)
+
+    monkeypatch.setattr(extraction.np, "save", flaky_save)
+    with pytest.raises(OSError):
+        save_layer_cache(tmp_path, "train", _vectors(2), ["a", "b"], [0, 1], _meta())
+    assert not (tmp_path / "train").exists()
+    assert not any(p.name.startswith("train") for p in tmp_path.iterdir())
 
 
 def test_make_synthetic_rejects_unknown_splits() -> None:

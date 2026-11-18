@@ -23,6 +23,7 @@ DOC_IDS_FILE = "doc_ids.json"
 LABELS_FILE = "labels.npy"
 TOKEN_LENGTHS_FILE = "token_lengths.npy"
 GENRE_SPLITS_FILE = "genre_splits.json"
+PARTIAL_SUFFIX = ".partial"  # a split being written; never read as a cache
 
 
 class CacheConfigMismatchError(ValueError):
@@ -103,11 +104,12 @@ def check_provider_for_run(metadata: CacheMetadata, config: RunConfig) -> None:
 
 
 class CacheProvider:
-    """Loads pre-extracted [N, 23, 768] layer vectors from disk (frozen backbone mode).
+    """Loads pre-extracted [N, 23, 768] layer vectors from disk (백본 고정 조건, ADR 0004).
 
     Vectors are memory-mapped (``np.load(..., mmap_mode="r")``) in their stored dtype, so a
-    14 GB float16 MNLI cache fits the 24 GB container limit. Consumers upcast each mini-batch to
-    float32 before computing (team decision on PR #8: store float16, compute float32).
+    float16 MNLI cache (~14 GB) fits the 24 GB container limit. Consumers upcast each mini-batch
+    to float32 before computing. (Storing float16 was agreed on PR #8, docs/03-plan.md §8; it
+    becomes final when configs/week1_env.yaml ``cache_dtype`` is filled in T-04b PR 2.)
     """
 
     def __init__(self, cache_dir: str) -> None:
@@ -123,7 +125,11 @@ class CacheProvider:
 
     @property
     def splits(self) -> list[str]:
-        return sorted(p.name for p in self.cache_dir.iterdir() if (p / VECTORS_FILE).is_file())
+        return sorted(
+            p.name
+            for p in self.cache_dir.iterdir()
+            if not p.name.endswith(PARTIAL_SUFFIX) and (p / VECTORS_FILE).is_file()
+        )
 
     def validate_for_run(self, config: RunConfig) -> None:
         check_provider_for_run(self.metadata, config)

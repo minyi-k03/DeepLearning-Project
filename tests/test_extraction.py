@@ -230,3 +230,37 @@ def test_cache_records_creation_metadata_and_rejects_mismatch(modernbert, tmp_pa
         provider.validate_for_run(
             replace(config, expected_cache_meta=replace(meta, torch_compile=True))
         )
+
+
+def test_extraction_refuses_an_unlocked_transformers_version() -> None:
+    """Caches must be built with the locked version (ADR 0005); checked before loading the model."""
+    pytest.importorskip("transformers")
+    from layer_fusion.extraction import extract_layer_vectors
+
+    with pytest.raises(ValueError, match="locked"):
+        extract_layer_vectors(
+            _docs("x."),
+            model_name=MODEL_NAME,
+            transformers_version="0.0.0",
+            attn_implementation="sdpa",
+            torch_compile=False,
+            include_special_tokens_in_pool=True,
+        )
+
+
+def test_special_tokens_can_be_left_out_of_the_mean(modernbert) -> None:
+    """include_special_tokens_in_pool=False pools content tokens only (both modes supported)."""
+    records = _docs("a short sentence for pooling.")
+    with_special = _extract(modernbert, records, include_special_tokens_in_pool=True)
+    without = _extract(modernbert, records, include_special_tokens_in_pool=False)
+    assert without.vectors.shape == (1, 23, 768)
+    assert not np.allclose(with_special.vectors, without.vectors, atol=1e-3)
+    assert without.metadata.include_special_tokens_in_pool is False
+
+
+def test_float32_extraction_still_reports_float16_round_trip_error(modernbert) -> None:
+    """The float16 decision is made from a float32 measurement run, so report it there too."""
+    result = _extract(modernbert, _docs("measure the value range."))
+    assert result.metadata.dtype == "float32"
+    assert result.report["max_abs_value"] > 0
+    assert result.report["float16_round_trip_max_error"] is not None
