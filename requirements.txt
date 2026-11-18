@@ -6,8 +6,8 @@ pytest>=8.0
 ruff>=0.6
 
 # ML / Extraction / Reporting dependencies
-# NOTE: Exact transformers 5.x version must be pinned after Week 1 verification (ADR 0005).
+# transformers is pinned to the version verified in Week 1 (T-02a, ADR 0005).
 torch>=2.2
-transformers>=5.0.0
+transformers==5.23.0
 datasets>=2.18
 matplotlib>=3.8
