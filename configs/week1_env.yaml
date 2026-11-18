@@ -28,8 +28,8 @@ imdb_length_check:
   # 측정: T-02b, scripts/measure_imdb_lengths.py → docs/measurements/imdb_length_check.json (2026-11-15)
 
 dataset_approval:
-  mnli_approved: null              # 교수님 승인 여부 (거절 시 AG News 비상 계획, ADR 0003)
-  sst2_approved: null              # 교수님 승인 여부 (미승인 시 제외, ADR 0003)
+  mnli_approved: true              # 교수님 승인 여부 (거절 시 AG News 비상 계획, ADR 0003) — 승인 확정 (T-02c, 2026-11-18)
+  sst2_approved: true              # 교수님 승인 여부 (미승인 시 제외, ADR 0003) — 승인 확정 (T-02c, 2026-11-18)
 
 training_budget:
   lr_candidates: null              # 학습률 후보 3개 (튜닝 분할에서 선택, 모든 결합 방식 동일)
