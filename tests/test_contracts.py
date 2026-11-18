@@ -93,6 +93,23 @@ SPEC_FIELDS: dict[str, tuple[type, set[str]]] = {
             "cog_seed_std_max",
         },
     ),
+    # SPEC §"11/30 판정 규칙 문서에 고정할 것": 임베딩 벡터 처리, 핵심 비교·파인튜닝 시드,
+    # H1·H5a 판정 결합 방식, "가장 좋은 결합 방식" 선정 기준
+    "11/30 고정 항목": (
+        DecisionRules,
+        {
+            "include_embedding_in_cog",
+            "include_embedding_in_global_denom",
+            "core_comparisons_for_5_seeds",
+            "finetune_num_seeds",
+            "h1_target_fusion_rule",
+            "h5a_target_fusion_rule",
+            "best_fusion_selection_rule",
+        },
+    ),
+    # 사용자 스토리 16(잘린 문서 비율), 17(문서별 토큰 길이·길이 구간), 53(문서 ID별 예측)
+    "문서별 길이(US 16·17)": (PredictionRecord, {"token_length", "length_bucket"}),
+    "잘린 문서 비율(US 16)": (ResultRecord, {"truncated_doc_ratio"}),
 }
 
 

@@ -286,7 +286,7 @@ T-01c ─┬─▶ T-03a ─┐                                           │   
 | 항목 | 영향 | 대응 |
 | --- | --- | --- |
 | ADR 0002가 `docs/SPEC.md`·`AGENTS.md`에서 인용되지만 `docs/adr/`에 파일이 없음 | 근거 추적 불가 | T-01d에서 복구 (내용은 팀이 작성, 에이전트가 지어내지 않음) |
-| `decision_rules.yaml`의 `target_fusion_rule`(H1·H5a), `core_comparisons_for_5_seeds`, `finetune_num_seeds`, `best_fusion_selection_rule`에 대응하는 필드가 `contracts.py` `DecisionRules`에 없음 (현재 `extra`로만 들어감) | 판정 코어가 규칙값을 타입 없이 읽게 됨 | T-07b 규칙 로더 작성 시 `DecisionRules` 필드로 정리 (계약 변경이므로 SPEC → contracts → 테스트 순서) |
+| `decision_rules.yaml`의 `target_fusion_rule`(H1·H5a), `core_comparisons_for_5_seeds`, `finetune_num_seeds`, `best_fusion_selection_rule`은 T-01c에서 `DecisionRules`에 `None` 기본값 필드로 추가됨. 단 형태가 SPEC에서 미정이라 4개는 `Any | None`(임시)이고, `hypotheses`의 `type`/`priority`는 계약에 필드가 없음 | T-07b가 규칙값을 타입 없이 읽거나 가설 유형·우선순위를 코드에 하드코딩할 수 있음 | T-07a에서 값·형태를 고정할 때 타입을 좁히고, T-07b 규칙 로더 작성 전에 `hypotheses` type/priority를 계약에 넣을지 로더가 YAML을 직접 읽을지 팀이 결정 (계약 변경이므로 SPEC → contracts → 테스트 순서) |
 | ADR 0003 "SST-2는 층 가중치로 판정" vs ADR 0007·GLOSSARY "H4는 탐색적" | 판정표 해석 혼동 | SPEC은 ADR 0007을 따름. T-01d에서 ADR 0003 문구 정리 |
 | 저장소가 아직 git이 아님 | 브랜치·리뷰 규칙(AGENTS.md §4) 적용 불가 | T-01b를 첫 작업으로 (11/15–11/17) |
 | 본 실험 기간(12/1–12/9) GPU 시간 추정치가 문서에 없음 (MNLI 파인튜닝 × 시드, 재현 6회, IMDB Lfull 추출) | 12/9까지 본 실험이 끝나지 않을 수 있음 | T-08a 디버깅 실행에서 실행당 시간을 재고 일정 재점검. 밀리면 MNLI > SST-2 > IMDB(ADR 0003) |
@@ -301,10 +301,11 @@ T-01c ─┬─▶ T-03a ─┐                                           │   
 
 Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 세션 로그와 마지막 verify만 남긴다. 옛 `docs/progress.md`의 로그를 옮겼다(T-01c 항목에는 남은 결정 한 문장을 덧붙였다).
 
-**마지막 verify**: 2026-11-18 통과 (12 passed, 26 skipped)
+**마지막 verify**: 2026-11-18 통과 (15 passed, 26 skipped)
 
 - 2026-11-15 · 초기 스캐폴딩 생성: `SPEC.md`, `GLOSSARY.md`, `docs/adr/0001`–`0009`를 바탕으로 패키지 구조, 설정 템플릿, 테스트 스켈레톤, 하네스 파일 생성.
 - 2026-11-15 · T-01a(차가원): Python 3.11 venv, `requirements.lock`(uv, universal) 생성, 새 환경에서 잠금 파일 설치 후 `python scripts/verify.py` ALL PASSED(5 passed, 26 skipped). README 설치 절차 갱신.
 - 2026-11-15 · T-02b(차가원): `scripts/measure_imdb_lengths.py`로 IMDB train/test 50,000건 측정. 최대 3,270(train)/2,971(test) 토큰 → `week1_env.yaml` `imdb_length_check` 채움(상한 4,096, 잘림 0건). 결과 `docs/measurements/imdb_length_check.json`. verify ALL PASSED.
 - 2026-11-18 · T-01c(고용민): SPEC §데이터 형태와 `contracts.py` 대조. `RunConfig`·`ResultRecord`·`CacheMetadata`는 SPEC 필드를 모두 담음. `DecisionRules`에 `decision_rules.yaml`의 규칙 5개(`h1_target_fusion_rule`, `h5a_target_fusion_rule`, `core_comparisons_for_5_seeds`, `finetune_num_seeds`, `best_fusion_selection_rule`)가 타입 필드 없이 `extra`로만 들어가던 것을 `None` 기본값 필드로 추가(값은 TBD 그대로). `tests/test_contracts.py` 7개 추가. verify ALL PASSED(12 passed, 26 skipped). 팀 확인 필요: `lr_tuning_scores` 키가 JSON에서 문자열이 됨(T-06b), `early_stopping_patience`가 int로 가정됨, `validate_metadata_match`가 SPEC 4항목보다 엄격(차가원 확인). 추가로 남은 범위: 가설별 `type`/`priority`(확증/탐색 구분)는 `DecisionRules` 타입 필드가 없음 — 계약에 넣을지 판정 로더가 YAML을 직접 읽을지 결정 필요.
+- 2026-11-18 · T-01c 교차검증 반영(고용민): 다른 에이전트의 코드리뷰를 실제 파일과 대조해 타당한 항목만 반영. (1) `h1_target_fusion_rule`·`h5a_target_fusion_rule`·`core_comparisons_for_5_seeds`·`best_fusion_selection_rule` 타입을 `str`/`list[str]`에서 `Any | None`으로 완화(SPEC §11/30이 대표 방식 하나인지 여러 방식인지 열어 둠, 값은 `None` 그대로). (2) `tests/test_contracts.py` `SPEC_FIELDS`에 SPEC §11/30 고정 항목 7개와 `token_length`·`length_bucket`·`truncated_doc_ratio`(US 16·17) 추가. 반영하지 않음: `genre_split` 검사(SPEC에 해당 필드 없음), `hypotheses` type/priority(위 T-01c 항목의 미결정 사항 그대로, 팀 결정 필요). §7의 `DecisionRules` 5필드 행이 옛 상태("`contracts.py`에 필드 없음")로 남아 있어, 사용자 요청에 따라 현재 상태(필드 추가됨, 타입 임시, `hypotheses` type/priority 미결정)로 고침.
 - 2026-11-18 · 진행 관리 통합(고용민): `docs/progress.md`를 폐지하고 Task별 상태를 이 문서 §4의 "상태" 열과 이 절로 합침. AGENTS.md §3·CLAUDE.md·README의 참조를 고침. 팀 확인 필요: 아직 병합되지 않은 브랜치(`feat/T-02a-runtime-lock` 등)가 옛 `progress.md`를 수정해 두었으면 병합 때 충돌하며, 그때는 삭제를 받아들이고 해당 상태·로그를 이 문서에 옮긴다.
