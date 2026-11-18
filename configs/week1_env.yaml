@@ -15,8 +15,9 @@ runtime_lock:
   cache_dtype: null                # "float32" | "float16" (MNLI train ~28GB fp32 / ~14GB fp16)
 
 imdb_length_check:
-  observed_max_tokens: null        # ModernBERT 토크나이저로 측정한 IMDB 최대 토큰 길이
-  lfull_max_length_cap: null       # 4096 이하면 자르지 않음, 초과 시 4096 유지 (ADR 0006)
+  observed_max_tokens: 3270        # ModernBERT 토크나이저로 측정한 IMDB 최대 토큰 길이 (train 3270 / test 2971, 특수 토큰 포함)
+  lfull_max_length_cap: 4096       # 4096 이하면 자르지 않음, 초과 시 4096 유지 (ADR 0006) → 관측 최대 ≤ 4096이라 잘리는 문서 0건
+  # 측정: T-02b, scripts/measure_imdb_lengths.py → docs/measurements/imdb_length_check.json (2026-11-15)
 
 dataset_approval:
   mnli_approved: null              # 교수님 승인 여부 (거절 시 AG News 비상 계획, ADR 0003)
