@@ -72,10 +72,51 @@ def test_mean_pooling_excludes_padding_tokens() -> None:
     raise NotImplementedError
 
 
-@pytest.mark.skip(reason="TODO(T-04): Requires ModernBERT-base tokenizer & extraction")
 def test_imdb_head_tail_truncation_lengths() -> None:
     """L128 = 32 + 94 (+ special -> 128), L512 = 128 + 382 (+ special -> 512)."""
-    raise NotImplementedError
+    pytest.importorskip("transformers")
+    from huggingface_hub import try_to_load_from_cache
+
+    if not isinstance(try_to_load_from_cache(MODEL_NAME, "tokenizer.json"), str):
+        pytest.skip(f"{MODEL_NAME} tokenizer not in local HF cache")
+    from transformers import AutoTokenizer
+
+    from layer_fusion.contracts import DocumentRecord, InputSetting
+    from layer_fusion.inputs import build_tokenized_inputs
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    long_text = " ".join(f"word{i}" for i in range(3000))
+    doc = DocumentRecord(doc_id="imdb-long", text_a=long_text, label=1)
+    content = tokenizer(long_text, add_special_tokens=False)["input_ids"]
+
+    for setting, head, tail, total in [
+        (InputSetting.L128, 32, 94, 128),
+        (InputSetting.L512, 128, 382, 512),
+    ]:
+        ids = build_tokenized_inputs([doc], tokenizer, input_setting=setting)["input_ids"][0]
+        assert len(ids) == total
+        assert ids[0] == tokenizer.cls_token_id and ids[-1] == tokenizer.sep_token_id
+        assert ids[1 : 1 + head] == content[:head]
+        assert ids[1 + head : -1] == content[-tail:]
+
+
+def test_mnli_pair_matches_real_tokenizer_pair_encoding() -> None:
+    """The manual [CLS] a [SEP] b [SEP] equals ModernBERT's own pair encoding (SPEC US 2)."""
+    pytest.importorskip("transformers")
+    from huggingface_hub import try_to_load_from_cache
+
+    if not isinstance(try_to_load_from_cache(MODEL_NAME, "tokenizer.json"), str):
+        pytest.skip(f"{MODEL_NAME} tokenizer not in local HF cache")
+    from transformers import AutoTokenizer
+
+    from layer_fusion.contracts import DocumentRecord
+    from layer_fusion.inputs import build_tokenized_inputs
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    premise, hypothesis = "A man is playing a guitar on stage.", "Someone performs music."
+    pair = DocumentRecord(doc_id="mnli-0", text_a=premise, label=0, text_b=hypothesis)
+    built = build_tokenized_inputs([pair], tokenizer)["input_ids"][0]
+    assert built == tokenizer(premise, hypothesis, add_special_tokens=True)["input_ids"]
 
 
 @pytest.mark.skip(reason="TODO(T-04): Requires ModernBERT-base extraction")

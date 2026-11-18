@@ -24,7 +24,8 @@ runtime_lock:
 
 imdb_length_check:
   observed_max_tokens: 3270        # ModernBERT 토크나이저로 측정한 IMDB 최대 토큰 길이 (train 3270 / test 2971, 특수 토큰 포함)
-  lfull_max_length_cap: 4096       # 4096 이하면 자르지 않음, 초과 시 4096 유지 (ADR 0006) → 관측 최대 ≤ 4096이라 잘리는 문서 0건
+  lfull_max_length_cap: 4096       # 4096 이하면 자르지 않음 (ADR 0006). 관측 최대 3,270 ≤ 4096이라 잘리는 문서 0건.
+  # 상한 초과 문서는 어느 부분을 남길지 ADR 0006에 없어 inputs.build_tokenized_inputs가 오류로 멈춤(PR #8 팀 합의).
   # 측정: T-02b, scripts/measure_imdb_lengths.py → docs/measurements/imdb_length_check.json (2026-11-15)
 
 dataset_approval:
