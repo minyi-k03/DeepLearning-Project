@@ -11,9 +11,9 @@
 - If documents conflict, report the conflict instead of guessing. Never invent values for `docs/SPEC.md` §결정 필요 사항; keep them `null` / `TBD` until confirmed.
 
 ## 3. Working Procedure
-- At session start, read `docs/progress.md`, `docs/03-plan.md`, and recent git log, then run `python scripts/verify.py`.
-- Start a fresh session for an independent task, handoff, or crowded context; update `docs/progress.md` and commit first. Keep small follow-up fixes in the same session.
-- Never delete tasks or change acceptance criteria in `docs/progress.md`; ask a human.
+- At session start, read `docs/03-plan.md` (each Task's status column and the §8 progress log) and recent git log, then run `python scripts/verify.py`.
+- Start a fresh session for an independent task, handoff, or crowded context; update the status column and §8 of `docs/03-plan.md` and commit first. Keep small follow-up fixes in the same session.
+- Never delete tasks or change acceptance criteria in `docs/03-plan.md`; agents may update only each Task's status column and the §8 progress log. Ask a human for anything else.
 - Plan multi-file, seam, contract, or config changes before implementation.
 - Preserve existing user changes and report critical ambiguities rather than inventing requirements.
 
