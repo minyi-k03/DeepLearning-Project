@@ -23,7 +23,9 @@ def run_experiment(
     - Trains with fixed epochs and early stopping across all fusion methods.
     - Evaluates on the eval split (MNLI reports both matched and mismatched error rates).
     """
-    raise NotImplementedError("TODO: Implement execution seam run_experiment (T-06)")
+    # Fail before any training when the provider was built under a different setting (US 26).
+    provider.validate_for_run(config)
+    raise NotImplementedError("TODO: Implement execution seam run_experiment (T-06a)")
 
 
 def run_sequential_queue(

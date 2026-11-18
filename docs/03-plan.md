@@ -146,7 +146,7 @@
 | T-01c | ✅ **완료** (PR #4 병합) | `contracts.py` 계약 검토·합의 (SPEC §데이터 형태와 필드 대조) | 52 | 11/17(화) | 고용민 (리뷰 차가원) | — | `RunConfig`·`ResultRecord`·`CacheMetadata`·`DecisionRules`가 SPEC 필드를 모두 담음 | verify, 상대 리뷰 | 예 | 높음 | ○ |
 | T-01d | ⬜ 대기 | 문서 정합성: ADR 0002 파일 누락 복구, ADR 0003 "SST-2 판정" 문구 정리 | — | 11/17(화) | 공통 | — | ADR 0001~0009 파일이 모두 있고 H4 표현이 ADR 0007·GLOSSARY와 일치 | 문서 리뷰 | 예 | 낮음 | ○ |
 
-### T-02 환경 확인 (11/16–11/22) — 🔄 **진행**
+### T-02 환경 확인 (11/16–11/22) — ✅ **완료**
 
 | ID | 상태 | 제목 | US | 마감 | 담당 | Blocked by | 완료 조건 | 확인 방법 | 공통 | 위험 | 병렬 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -154,18 +154,18 @@
 | T-02b | ✅ **완료** (PR #3 병합) | IMDB 최대 토큰 길이 측정 → Lfull 상한·잘린 문서 비율 기록 | 15, 16 | 11/18(수) | 차가원 | T-01a | `imdb_length_check` 채움 (4,096 이하면 자르지 않음, 넘으면 4,096 + 비율) | 측정 스크립트 실행 로그 | 예 | 낮음 | ○ |
 | T-02c | ✅ **완료** (승인 확정, `dataset_approval` 반영) | 교수님 MNLI·SST-2 사용 승인 확인 | 10, 11 | 11/20(금) | 공통 | — | `dataset_approval` 채움. 거절 시 ADR 0003 비상 계획 적용 | 수동 (회신 기록) | 예 | 높음 | ○ |
 
-### T-03 데이터·입력 — ⬜ 대기
+### T-03 데이터·입력 — 🔄 **진행**
 
 | ID | 상태 | 제목 | US | 마감 | 담당 | Blocked by | 완료 조건 | 확인 방법 | 공통 | 위험 | 병렬 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | T-03a | ⬜ 대기 | 데이터 모듈: MNLI·SST-2·IMDB 공통 로더, 문서 ID, MNLI matched/mismatched, 튜닝 분할 10%, 소량 표본(시드마다 새로·클래스당 1,000·ID 기록), 데이터셋 제외/AG News 전환이 설정만으로 되게 | 1, 3–11 | 11/19(목) | 고용민 | T-01c | 평가셋 = MNLI·SST-2 validation, IMDB test. 같은 시드 → 같은 표본, 다른 시드 → 다른 표본 | 단위 테스트(작은 가짜 데이터), `test_small_data_sampling_...` un-skip(T-06a와 함께) | 아니오 | 보통 | ○ |
-| T-03b | ⬜ 대기 | 입력 구성: MNLI [SEP] 단일 입력, 앞+뒤 자르기(L128 32+94, L512 128+382, 특수 토큰 포함 128/512), Lfull 상한, 토큰 길이·길이 구간·시야 비율 | 2, 12–14, 17–19 | 11/21(토) | 차가원 | T-01a | 자르기 길이가 정확하고 모든 IMDB 문서에 길이·길이 구간이 붙음 | `test_head_tail_truncation_budgets` un-skip, 기존 길이 구간·시야 비율 테스트 | 아니오 | 보통 | ○ |
+| T-03b | 👀 **리뷰 대기** (Gawoun: `build_tokenized_inputs` 구현, 자르기 길이 테스트 통과) | 입력 구성: MNLI [SEP] 단일 입력, 앞+뒤 자르기(L128 32+94, L512 128+382, 특수 토큰 포함 128/512), Lfull 상한, 토큰 길이·길이 구간·시야 비율 | 2, 12–14, 17–19 | 11/21(토) | 차가원 | T-01a | 자르기 길이가 정확하고 모든 IMDB 문서에 길이·길이 구간이 붙음 | `test_head_tail_truncation_budgets` un-skip, 기존 길이 구간·시야 비율 테스트 | 아니오 | 보통 | ○ |
 
-### T-04 추출·캐시·공급원 — ⬜ 대기
+### T-04 추출·캐시·공급원 — 🔄 **진행**
 
 | ID | 상태 | 제목 | US | 마감 | 담당 | Blocked by | 완료 조건 | 확인 방법 | 공통 | 위험 | 병렬 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| T-04a | ⬜ 대기 | 공급원 인터페이스 확정, `FakeLayerVectorProvider.make_synthetic`, 생성 설정 불일치 오류 | 26 | 11/19(목) | 차가원 | T-01c | 가짜 공급원으로 실행 seam 테스트를 작성할 수 있음, 설정이 다르면 `CacheConfigMismatchError` | `test_mismatched_provider_metadata_raises_error` un-skip | 예 | 보통 | ○ |
+| T-04a | 👀 **리뷰 대기** (Gawoun: 가짜 공급원·실행 전 설정 검사, 불일치 테스트 통과) | 공급원 인터페이스 확정, `FakeLayerVectorProvider.make_synthetic`, 생성 설정 불일치 오류 | 26 | 11/19(목) | 차가원 | T-01c | 가짜 공급원으로 실행 seam 테스트를 작성할 수 있음, 설정이 다르면 `CacheConfigMismatchError` | `test_mismatched_provider_metadata_raises_error` un-skip | 예 | 보통 | ○ |
 | T-04b | ⬜ 대기 | 층 벡터 추출기·캐시 writer·`CacheProvider`: [N, 23, 768] + doc_id·라벨 순서 + 생성 설정(모델·버전·길이·자르기 방식) | 21–23, 25, 27 | 11/24(화) | 차가원 | T-02a, T-03b | 패딩 제외 평균, 짧은 문서는 L512 = Lfull, 순서 일치 | Seam ③ 나머지 5개 un-skip (`tests/test_extraction.py`) | 아니오 | 높음 | — |
 
 ### T-05 결합 헤드 — ⬜ 대기
@@ -301,7 +301,7 @@ T-01c ─┬─▶ T-03a ─┐                                           │   
 
 Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 세션 로그와 마지막 verify만 남긴다. 옛 `docs/progress.md`의 로그를 옮겼다(T-01c 항목에는 남은 결정 한 문장을 덧붙였다).
 
-**마지막 verify**: 2026-11-18 Gawoun, Python 3.11 및 로컬 모델 캐시 사용 (17 passed, 25 skipped)
+**마지막 verify**: 2026-11-18 Gawoun(PR #8), Python 3.11 및 로컬 모델 캐시 사용 (40 passed, 22 skipped). torch·transformers 없는 환경에서는 실제 모델 테스트 3~4개가 skip된다.
 
 - 2026-11-15 · 초기 스캐폴딩 생성: `SPEC.md`, `GLOSSARY.md`, `docs/adr/0001`–`0009`를 바탕으로 패키지 구조, 설정 템플릿, 테스트 스켈레톤, 하네스 파일 생성.
 - 2026-11-15 · T-01a(차가원): Python 3.11 venv, `requirements.lock`(uv, universal) 생성, 새 환경에서 잠금 파일 설치 후 `python scripts/verify.py` ALL PASSED(5 passed, 26 skipped). README 설치 절차 갱신.
@@ -315,3 +315,6 @@ Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 세션 
 - 2026-11-18 · T-01a 완료(차가원): 고용민 PC에서 README 절차대로 설치 후 verify 통과 확인(팀원 보고). 차가원 Mac(11/15·11/18), GPU 서버 컨테이너(11/18)와 함께 완료 조건 충족. Windows용 `py -3.11` 안내는 PR #5에 포함.
 - 2026-11-18 · T-02a 완료(차가원): 고용민 PR #5 승인으로 `attn_implementation: "sdpa"`, `torch_compile: false` 결정 → `configs/week1_env.yaml` `runtime_lock`의 버전·마지막 층 정의·어텐션·컴파일 4개 값 채움(`cache_dtype`은 T-04b 전 별도 결정). 근거 정정: compile 측정은 forward만·512 고정 길이·1회라 파인튜닝 이득은 미측정 → T-08a에서 파인튜닝 실행 시간 실측 후 필요하면 11/30 전에 재검토. ADR 0005의 `tie_last_hidden_states` 문구는 T-01d에서 정리하기로 함.
 - 2026-11-18 · 정리(차가원): T-01b 완료 조건 문구를 개인 브랜치 규칙(AGENTS.md §4)에 맞게 "기능 브랜치·PR 흐름" → "개인 브랜치(YongMin·Gawoun) → PR → main 흐름"으로 수정(차가원 승인, 고용민 요청). 병합이 끝난 원격 브랜치 `feat/T-01a-env-lock`·`feat/T-02b-imdb-length`·`feat/T-02a-runtime-lock`·`feat/T-01-devcontainer` 삭제(내용이 main에 있는 것 확인 후).
+- 2026-11-18 · T-03b(차가원): `inputs.build_tokenized_inputs` 구현 — MNLI·SST-2는 `[CLS] a [SEP] (b [SEP])` 그대로, L128/L512는 내용 토큰 앞 32+뒤 94 / 앞 128+뒤 382로 특수 토큰 포함 정확히 128/512, Lfull은 상한까지 자르지 않음. 문서별 `token_lengths`(자르기 전)·`length_buckets`·`truncated`·`truncated_doc_ratio` 반환. `truncation_rule_name` 추가(T-04b `CacheMetadata.truncation_rule`용). transformers 5.x에 `build_inputs_with_special_tokens`가 없어 특수 토큰을 `cls/sep_token_id`로 직접 붙임. `test_head_tail_truncation_budgets`(가짜 토크나이저)·`test_imdb_head_tail_truncation_lengths`(실제 ModernBERT 토크나이저, 캐시 없으면 skip) un-skip. 실제 IMDB test 200건: L128 잘림 90.5%, L512 14%, Lfull 0%, 앞·뒤 디코딩 확인. **결정 필요**: Lfull 상한 초과 문서의 자르기 방식은 ADR 0006에 없어 `ValueError`로 멈추게 둠(IMDB 최대 3,270 < 4,096이라 현재 영향 없음). 참고: IMDB 원문에 `<br />` 태그가 그대로 있음 — 전처리 여부는 T-03a(데이터 모듈)에서 팀 확인 필요(T-02b 길이 측정도 원문 기준).
+- 2026-11-18 · T-04a(차가원): `providers.check_provider_for_run` 추가 — `input_setting`이 다르면 오류, **본 실험(`run_kind=main`)은 `expected_cache_meta` 필수**(디버깅만 생략 허용), 기대 메타가 있으면 `CacheMetadata` 전체 비교(ADR 0005). 기존에는 기대 메타가 없으면 검사를 건너뛰어 다른 설정 캐시가 조용히 통과할 수 있었음(US 26). `FakeLayerVectorProvider.make_synthetic` 구현(train/eval, [N,23,768] float32, seed 결정적, 클래스 균형·클래스별 평균 차이로 학습 신호, MNLI형 eval은 matched/mismatched 반씩, `doc_records` 지정 가능, 기본 메타 = `week1_env.yaml` 고정값). `run_experiment`는 학습 전에 `validate_for_run`만 수행(나머지는 T-06a). `test_mismatched_provider_metadata_raises_error` un-skip, `tests/test_providers.py` 11개 추가. verify ALL PASSED(39 passed, 22 skipped). **팀 확인 필요**: `CacheMetadata`에 데이터셋 이름이 없어 MNLI 캐시를 SST-2 실행에 써도 메타 검사로 못 잡음 — SPEC 캐시 생성 설정에도 없어 계약 변경 여부 논의 필요.
+- 2026-11-18 · PR #8 리뷰 반영(차가원): 고용민 교차검증 반영 — `check_provider_for_run`의 `input_setting` 비교에서 `is not None` 조건 제거(MNLI·SST-2 실행에 IMDB 캐시가 들어오는 경우도 차단, 테스트 추가), 실제 ModernBERT 토크나이저로 MNLI 직접 결합 `[CLS] a [SEP] b [SEP]` = `tokenizer(a, b)` 확인 테스트 추가. 리뷰에서 팀 합의: Lfull 상한 초과 시 오류 유지, IMDB `<br />` 원문 유지, `CacheMetadata`에 데이터셋 필드 추가(계약 변경, 고용민이 SPEC부터 반영), 본 실험 `expected_cache_meta` 필수(T-06b에서 자동 생성), **캐시 float16 저장·로드 시 float32**(디버깅 추출에서 최대 절댓값 1회 확인 후 확정), **토큰 평균에 특수 토큰 포함(true)** → `week1_env.yaml` 기록은 T-04b에서.

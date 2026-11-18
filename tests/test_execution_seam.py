@@ -55,10 +55,32 @@ def test_mnli_result_record_includes_matched_and_mismatched_error_rates() -> Non
     raise NotImplementedError
 
 
-@pytest.mark.skip(reason="TODO(T-04 / T-06): Enable after provider validation is wired")
 def test_mismatched_provider_metadata_raises_error() -> None:
     """Provider creation config differing from RunConfig must fail before training."""
-    raise NotImplementedError
+    from dataclasses import replace
+
+    from layer_fusion.contracts import (
+        BackboneCondition,
+        DataAmount,
+        DatasetName,
+        FusionMethod,
+        RunConfig,
+    )
+    from layer_fusion.providers import CacheConfigMismatchError, FakeLayerVectorProvider
+    from layer_fusion.runner import run_experiment
+
+    provider = FakeLayerVectorProvider.make_synthetic()  # sdpa, compile off
+    expected = replace(provider.metadata, attn_implementation="flash_attention_2")
+    config = RunConfig(
+        dataset=DatasetName.MNLI,
+        data_amount=DataAmount.FULL,
+        fusion_method=FusionMethod.F2,
+        backbone_condition=BackboneCondition.FROZEN,
+        seed=0,
+        expected_cache_meta=expected,
+    )
+    with pytest.raises(CacheConfigMismatchError):
+        run_experiment(config, provider)
 
 
 @pytest.mark.skip(reason="TODO(T-06): Enable after runner is implemented")
