@@ -6,7 +6,7 @@
 - 요구사항 및 테스트 경계: [`docs/SPEC.md`](docs/SPEC.md)
 - 공용 용어집: [`GLOSSARY.md`](GLOSSARY.md)
 - 설계 결정(ADR): [`docs/adr/`](docs/adr/)
-- 작업 분해 및 진행 상황: [`docs/03-plan.md`](docs/03-plan.md), [`docs/progress.md`](docs/progress.md)
+- 작업 분해 및 Task별 진행 상황: [`docs/03-plan.md`](docs/03-plan.md)
 
 ## 역할 분담
 - **모델 담당 (고용민)**: 결합 방식(`B0`, `F1`~`F4`, `B0+`), 층별 정규화, 분류기, 가설 판정·분석
@@ -17,7 +17,7 @@
 ├── GLOSSARY.md                # 용어 단일 기준
 ├── AGENTS.md / CLAUDE.md      # AI 에이전트 공통 규칙
 ├── configs/                   # 실험 행렬, 판정 규칙(11/30 고정), 1주차 환경 설정
-├── docs/                      # SPEC.md(요구사항 단일 기준), ADR, WBS 계획(03-plan.md), 진행 현황(progress.md)
+├── docs/                      # SPEC.md(요구사항 단일 기준), ADR, WBS 계획·진행 현황(03-plan.md)
 ├── src/layer_fusion/          # 핵심 패키지 (contracts, layers, data, inputs, extraction, providers, fusion, runner, judgment, reporting)
 ├── scripts/                   # verify.py, sync_skills.py, CLI 진입점
 ├── tests/                     # 단위 테스트 및 Seam ①②③ 테스트
