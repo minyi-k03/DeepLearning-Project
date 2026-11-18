@@ -15,9 +15,13 @@
     "--memory-swap=24g",
     "--shm-size=8g"
   ],
-  // 모델 가중치는 각자 서버 홈에 보관 → 컨테이너를 다시 만들어도 다시 받지 않는다.
+  // 모델 가중치와 pip 다운로드 캐시는 각자 서버 홈에 보관 → 컨테이너를 다시 만들어도 다시 받지 않는다.
+  // (pip 캐시가 있으면 rebuild 때 postCreateCommand의 pip install이 다운로드 없이 캐시에서 설치한다.)
+  // bind mount 원본 폴더가 없으면 컨테이너 생성이 실패하므로 서버(호스트)에서 먼저 만든다.
+  "initializeCommand": "mkdir -p \"${localEnv:HOME}/.cache/huggingface\" \"${localEnv:HOME}/.cache/pip\"",
   "mounts": [
-    "source=${localEnv:HOME}/.cache/huggingface,target=/root/.cache/huggingface,type=bind"
+    "source=${localEnv:HOME}/.cache/huggingface,target=/root/.cache/huggingface,type=bind",
+    "source=${localEnv:HOME}/.cache/pip,target=/root/.cache/pip,type=bind"
   ],
   // gcc + libc6-dev(stdlib.h 등 C 헤더): torch.compile(Triton)이 실행 중에 C 코드를 컴파일할 때 필요.
   // --no-install-recommends로는 libc6-dev가 따라오지 않으므로 명시한다. git: 컨테이너 안에서 pull/commit.
