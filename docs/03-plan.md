@@ -137,14 +137,14 @@
 
 열 설명: **상태** = §0의 상태 값과 기호(에이전트도 갱신 가능) / **공통** = 공통 파일 수정 여부 / **위험** = 낮음·보통·높음 / **병렬** = 같은 마일스톤의 다른 Task와 동시 진행 가능 여부
 
-### T-01 공통 기반 — 🔄 **진행**
+### T-01 공통 기반 — ✅ **완료**
 
 | ID | 상태 | 제목 | US | 마감 | 담당 | Blocked by | 완료 조건 | 확인 방법 | 공통 | 위험 | 병렬 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | T-01a | ✅ **완료** (PR #2 병합, 차가원 Mac·GPU 서버·고용민 PC 확인) | Python 환경·의존성 잠금, README 설치 절차 | — | 11/17(화) | 차가원 | — | 새 환경에서 README대로 설치 후 verify 통과 (transformers 버전은 T-02a에서 확정 후 잠금 갱신) | verify, 두 사람 컴퓨터에서 실행 | 예 | 보통 | ○ |
 | T-01b | ✅ **완료** (CODEOWNERS·main 보호·PR 흐름 확인 완료) | git 저장소 초기화, main 보호, CODEOWNERS(AGENTS.md §4 공통 파일) | — | 11/16(월) | 차가원 | — | 개인 브랜치(YongMin·Gawoun) → PR → main 흐름 작동, 공통 파일에 리뷰어 지정 | 테스트 PR 1건 | 예 | 높음 | ○ |
 | T-01c | ✅ **완료** (PR #4 병합) | `contracts.py` 계약 검토·합의 (SPEC §데이터 형태와 필드 대조) | 52 | 11/17(화) | 고용민 (리뷰 차가원) | — | `RunConfig`·`ResultRecord`·`CacheMetadata`·`DecisionRules`가 SPEC 필드를 모두 담음 | verify, 상대 리뷰 | 예 | 높음 | ○ |
-| T-01d | ⬜ 대기 | 문서 정합성: ADR 0002 파일 누락 복구, ADR 0003 "SST-2 판정" 문구 정리 | — | 11/17(화) | 공통 | — | ADR 0001~0009 파일이 모두 있고 H4 표현이 ADR 0007·GLOSSARY와 일치 | 문서 리뷰 | 예 | 낮음 | ○ |
+| T-01d | ✅ **완료** (PR #9 병합: ADR 0002 복구, ADR 0003·0005 문구 정리) | 문서 정합성: ADR 0002 파일 누락 복구, ADR 0003 "SST-2 판정" 문구 정리 | — | 11/17(화) | 공통 | — | ADR 0001~0009 파일이 모두 있고 H4 표현이 ADR 0007·GLOSSARY와 일치 | 문서 리뷰 | 예 | 낮음 | ○ |
 
 ### T-02 환경 확인 (11/16–11/22) — ✅ **완료**
 
@@ -319,3 +319,4 @@ Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 세션 
 - 2026-11-18 · T-04a(차가원): `providers.check_provider_for_run` 추가 — `input_setting`이 다르면 오류, **본 실험(`run_kind=main`)은 `expected_cache_meta` 필수**(디버깅만 생략 허용), 기대 메타가 있으면 `CacheMetadata` 전체 비교(ADR 0005). 기존에는 기대 메타가 없으면 검사를 건너뛰어 다른 설정 캐시가 조용히 통과할 수 있었음(US 26). `FakeLayerVectorProvider.make_synthetic` 구현(train/eval, [N,23,768] float32, seed 결정적, 클래스 균형·클래스별 평균 차이로 학습 신호, MNLI형 eval은 matched/mismatched 반씩, `doc_records` 지정 가능, 기본 메타 = `week1_env.yaml` 고정값). `run_experiment`는 학습 전에 `validate_for_run`만 수행(나머지는 T-06a). `test_mismatched_provider_metadata_raises_error` un-skip, `tests/test_providers.py` 11개 추가. verify ALL PASSED(39 passed, 22 skipped). **팀 확인 필요**: `CacheMetadata`에 데이터셋 이름이 없어 MNLI 캐시를 SST-2 실행에 써도 메타 검사로 못 잡음 — SPEC 캐시 생성 설정에도 없어 계약 변경 여부 논의 필요.
 - 2026-11-18 · PR #8 리뷰 반영(차가원): 고용민 교차검증 반영 — `check_provider_for_run`의 `input_setting` 비교에서 `is not None` 조건 제거(MNLI·SST-2 실행에 IMDB 캐시가 들어오는 경우도 차단, 테스트 추가), 실제 ModernBERT 토크나이저로 MNLI 직접 결합 `[CLS] a [SEP] b [SEP]` = `tokenizer(a, b)` 확인 테스트 추가. 리뷰에서 팀 합의: Lfull 상한 초과 시 오류 유지, IMDB `<br />` 원문 유지, `CacheMetadata`에 데이터셋 필드 추가(계약 변경, 고용민이 SPEC부터 반영), 본 실험 `expected_cache_meta` 필수(T-06b에서 자동 생성), **캐시 float16 저장·로드 시 float32**(디버깅 추출에서 최대 절댓값 1회 확인 후 확정), **토큰 평균에 특수 토큰 포함(true)** → `week1_env.yaml` 기록은 T-04b에서.
 - 2026-11-18 · T-03b·T-04a 완료(차가원): PR #8 고용민 승인 후 병합(`aee4f10`). /code-review(표준·명세) 반영분 포함. T-04b로 넘긴 항목: `TokenizedInputs` 데이터클래스, `truncation_rule` 문자열 형식 확인, 문서별 시야 비율, 데이터셋 필드·IMDB `input_setting` 검사(계약 변경), `expected_cache_meta` 필수 규칙 SPEC 반영, `cache_dtype`·`include_special_tokens_in_pool` 기록.
+- 2026-11-18 · T-01d 완료 표시(차가원, 담당 공통): PR #9(고용민) 병합 확인 후 상태 ✅, T-01 묶음 제목 ✅로 갱신.
