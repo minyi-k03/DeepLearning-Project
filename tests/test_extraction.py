@@ -93,7 +93,7 @@ def test_imdb_head_tail_truncation_lengths() -> None:
         (InputSetting.L128, 32, 94, 128),
         (InputSetting.L512, 128, 382, 512),
     ]:
-        ids = build_tokenized_inputs([doc], tokenizer, input_setting=setting)["input_ids"][0]
+        ids = build_tokenized_inputs([doc], tokenizer, input_setting=setting).input_ids[0]
         assert len(ids) == total
         assert ids[0] == tokenizer.cls_token_id and ids[-1] == tokenizer.sep_token_id
         assert ids[1 : 1 + head] == content[:head]
@@ -115,7 +115,7 @@ def test_mnli_pair_matches_real_tokenizer_pair_encoding() -> None:
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     premise, hypothesis = "A man is playing a guitar on stage.", "Someone performs music."
     pair = DocumentRecord(doc_id="mnli-0", text_a=premise, label=0, text_b=hypothesis)
-    built = build_tokenized_inputs([pair], tokenizer)["input_ids"][0]
+    built = build_tokenized_inputs([pair], tokenizer).input_ids[0]
     assert built == tokenizer(premise, hypothesis, add_special_tokens=True)["input_ids"]
 
 
