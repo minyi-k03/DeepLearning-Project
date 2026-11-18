@@ -47,6 +47,29 @@ python scripts/verify.py             # [verify] ALL PASSED 가 나오면 완료
 
 확인된 환경 (2026-11-15): macOS arm64 / Python 3.11.15 / torch 2.15.0 (MPS 사용 가능) / transformers 5.23.0. 새 환경에서 잠금 파일로 설치한 뒤 `verify` 통과.
 
+## GPU 서버 (공용, 개발 컨테이너)
+연구실 서버 `metis`(RTX 5090 1장, 32GB)는 두 사람이 나눠 씁니다. 각자 자기 서버 계정으로 접속해 **자기 폴더·자기 컨테이너**를 씁니다. 설정은 `.devcontainer/devcontainer.json` 하나를 같이 쓰고, 컨테이너 이름은 서버 계정 이름으로 자동으로 붙습니다(`layer-fusion-<계정>`).
+
+처음 한 번 (서버 터미널):
+```bash
+nvidia-smi                                    # GPU를 누가 쓰고 있는지 확인
+mkdir -p ~/.cache/huggingface                 # 모델 가중치 보관 (컨테이너와 공유)
+git clone https://github.com/minyi-k03/DeepLearning-Project.git ~/DeepLearning-Project
+```
+그다음 VS Code(Remote-SSH)에서 **파일 → 폴더 열기 → `~/DeepLearning-Project`** → **F1 → `Dev Containers: Reopen in Container`**. 처음에는 패키지 설치로 10~20분 걸립니다. 컨테이너 안 터미널에서 확인합니다.
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+python scripts/verify.py
+```
+
+GPU 사용 규칙 (ADR 0009):
+- **디버깅 실행**(`run_kind=debug`)은 둘이 동시에 돌려도 됩니다. 메모리 32GB를 넘지 않게 합니다.
+- **본 실험**(학습 시간을 재는 실행)은 인프라 담당(차가원)이 대기열로 한 번에 하나씩 돌립니다. 그동안 다른 GPU 작업은 하지 않습니다.
+- 컨테이너마다 CPU 8코어·메모리 24GB 상한이 걸려 있습니다(서버 20코어·61GB). 넘으면 내 컨테이너 안의 프로세스만 종료됩니다.
+- GPU 메모리는 도커로 제한할 수 없습니다. 실행 전에 `nvidia-smi`로 다른 사람의 사용량을 확인합니다.
+- 다 쓰면 VS Code 창을 닫거나 `docker stop layer-fusion-$USER`로 컨테이너를 멈춥니다.
+- 다른 프로젝트의 컨테이너는 건드리지 않습니다.
+
 ## Skills 동기화
 프로젝트 스킬 원본은 `.agents/skills/`에 두며, `.claude/skills/`는 `scripts/sync_skills.py`로 동기화합니다.
 ```bash
