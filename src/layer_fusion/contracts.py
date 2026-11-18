@@ -188,6 +188,13 @@ class DecisionRules:
     include_embedding_in_global_denom: bool | None
     seed_rank_corr_min: float | None
     cog_seed_std_max: float | None
+    # TBD until 11/30 lock (T-07a): values stay None (AGENTS.md §2). The types below are
+    # provisional placeholders, not decisions; T-07a/T-07b narrow or replace them.
+    h1_target_fusion_rule: str | None = None
+    h5a_target_fusion_rule: str | None = None
+    core_comparisons_for_5_seeds: list[str] | None = None
+    finetune_num_seeds: int | None = None
+    best_fusion_selection_rule: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
