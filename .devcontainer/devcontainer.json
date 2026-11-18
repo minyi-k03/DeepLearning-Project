@@ -19,8 +19,9 @@
   "mounts": [
     "source=${localEnv:HOME}/.cache/huggingface,target=/root/.cache/huggingface,type=bind"
   ],
-  // gcc: torch.compile(Triton)이 실행 중에 필요. git: 컨테이너 안에서 pull/commit.
-  "postCreateCommand": "apt-get update && apt-get install -y --no-install-recommends gcc git && pip install -r requirements.lock && pip install -e . --no-deps",
+  // gcc + libc6-dev(stdlib.h 등 C 헤더): torch.compile(Triton)이 실행 중에 C 코드를 컴파일할 때 필요.
+  // --no-install-recommends로는 libc6-dev가 따라오지 않으므로 명시한다. git: 컨테이너 안에서 pull/commit.
+  "postCreateCommand": "apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev git && pip install -r requirements.lock && pip install -e . --no-deps",
   "customizations": {
     "vscode": {
       "extensions": ["ms-python.python"]
