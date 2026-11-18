@@ -99,6 +99,12 @@ def test_imdb_head_tail_truncation_lengths() -> None:
         assert ids[1 : 1 + head] == content[:head]
         assert ids[1 + head : -1] == content[-tail:]
 
+    # MNLI: the manual [CLS] a [SEP] b [SEP] equals the tokenizer's own pair encoding.
+    premise, hypothesis = "A man is playing a guitar on stage.", "Someone performs music."
+    pair = DocumentRecord(doc_id="mnli-0", text_a=premise, label=0, text_b=hypothesis)
+    built = build_tokenized_inputs([pair], tokenizer)["input_ids"][0]
+    assert built == tokenizer(premise, hypothesis, add_special_tokens=True)["input_ids"]
+
 
 @pytest.mark.skip(reason="TODO(T-04): Requires ModernBERT-base extraction")
 def test_short_docs_under_512_identical_between_l512_and_lfull() -> None:

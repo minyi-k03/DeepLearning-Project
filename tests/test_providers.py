@@ -115,6 +115,15 @@ def test_input_setting_mismatch_raises_even_without_expected_meta(
         provider.validate_for_run(_config(input_setting=InputSetting.LFULL, run_kind=RunKind.DEBUG))
 
 
+def test_imdb_cache_rejected_for_run_without_input_setting(
+    sample_cache_metadata: CacheMetadata,
+) -> None:
+    """An MNLI/SST-2 run (input_setting=None) must not accept an IMDB L512 cache (PR #8 review)."""
+    provider = FakeLayerVectorProvider.make_synthetic(metadata=sample_cache_metadata)  # L512
+    with pytest.raises(CacheConfigMismatchError, match="input_setting"):
+        provider.validate_for_run(_config(input_setting=None, run_kind=RunKind.DEBUG))
+
+
 def test_main_run_requires_expected_metadata() -> None:
     provider = FakeLayerVectorProvider.make_synthetic()
     with pytest.raises(CacheConfigMismatchError, match="expected_cache_meta"):

@@ -56,12 +56,13 @@ def validate_metadata_match(actual: CacheMetadata, expected: CacheMetadata) -> N
 def check_provider_for_run(metadata: CacheMetadata, config: RunConfig) -> None:
     """Fail before training when the provider was built under a different setting (SPEC US 26).
 
-    - ``config.input_setting`` must equal ``metadata.input_setting`` whenever it is set.
+    - ``config.input_setting`` must equal ``metadata.input_setting`` (``None`` included, so an
+      MNLI/SST-2 run cannot take an IMDB L128/L512/Lfull cache).
     - Main runs must declare ``expected_cache_meta``; only debug runs may skip it, so a
       forgotten expectation cannot let a cache from another setting slip through.
     - With ``expected_cache_meta`` every CacheMetadata field must match (ADR 0005).
     """
-    if config.input_setting is not None and config.input_setting != metadata.input_setting:
+    if config.input_setting != metadata.input_setting:
         raise CacheConfigMismatchError(
             f"input_setting mismatch: run={config.input_setting}, "
             f"provider={metadata.input_setting}"
