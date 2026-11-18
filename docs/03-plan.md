@@ -300,9 +300,17 @@ T-01c ─┬─▶ T-03a ─┐                                           │   
 
 ## 8. 진행 기록
 
-Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 세션 로그와 마지막 verify만 남긴다. 옛 `docs/progress.md`의 로그를 옮겼다(T-01c 항목에는 남은 결정 한 문장을 덧붙였다).
+Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 상태 요약, 세션 로그, 마지막 verify를 남긴다. 옛 `docs/progress.md`의 로그를 옮겼다(T-01c 항목에는 남은 결정 한 문장을 덧붙였다).
 
-**마지막 verify**: 2026-11-18 Gawoun(PR #8), Python 3.11 및 로컬 모델 캐시 사용 (40 passed, 22 skipped). torch·transformers 없는 환경에서는 실제 모델 테스트 3~4개가 skip된다.
+### 완료 작업과 남은 작업
+
+2026-11-19 PR #12 기준입니다. 최신 상태는 §4 작업표에서 확인하고, 상태 열을 바꾸는 PR에서 이 요약도 같이 고칩니다.
+
+- **완료 (9건)** · T-01a–d, T-02a–c, T-03b, T-04a
+- **진행 중 (2건)** · T-03a (PR #11 리뷰 중), T-04b (PR #12: 추출기·캐시 / PR 2 남음: CLI·float16 실측·`week1_env.yaml`)
+- **남은 작업 (21건)** · T-05a–b, T-06a–e, T-07a–c, T-08a–h, T-09a–c
+
+**마지막 verify**: 2026-11-19 Gawoun(PR #12), Python 3.11 및 로컬 모델 캐시 사용 (62 passed, 18 skipped). torch·transformers 없는 환경에서는 실제 모델 테스트 3~4개가 skip된다.
 
 - 2026-11-15 · 초기 스캐폴딩 생성: `SPEC.md`, `GLOSSARY.md`, `docs/adr/0001`–`0009`를 바탕으로 패키지 구조, 설정 템플릿, 테스트 스켈레톤, 하네스 파일 생성.
 - 2026-11-15 · T-01a(차가원): Python 3.11 venv, `requirements.lock`(uv, universal) 생성, 새 환경에서 잠금 파일 설치 후 `python scripts/verify.py` ALL PASSED(5 passed, 26 skipped). README 설치 절차 갱신.
