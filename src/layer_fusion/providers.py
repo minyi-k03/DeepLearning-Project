@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Protocol
 
 import numpy as np
 
-from layer_fusion.contracts import CacheMetadata, DocumentRecord, RunConfig, RunKind
+from layer_fusion.contracts import CacheMetadata, DocumentRecord, InputSetting, RunConfig, RunKind
 from layer_fusion.inputs import truncation_rule_name
 from layer_fusion.layers import HIDDEN_SIZE, NUM_LAYER_VECTORS
 
 SYNTHETIC_SPLITS = ("train", "eval")
+
+# On-disk cache layout (T-04b): <cache_dir>/metadata.json + <cache_dir>/<split>/{files below}
+CACHE_METADATA_FILE = "metadata.json"
+VECTORS_FILE = "vectors.npy"
+DOC_IDS_FILE = "doc_ids.json"
+LABELS_FILE = "labels.npy"
+TOKEN_LENGTHS_FILE = "token_lengths.npy"
+GENRE_SPLITS_FILE = "genre_splits.json"
+PARTIAL_SUFFIX = ".partial"  # a split being written; never read as a cache
 
 
 class CacheConfigMismatchError(ValueError):
@@ -43,6 +54,22 @@ class LayerVectorProvider(Protocol):
 
     def get_split(self, split_name: str) -> LayerVectorBatch:
         ...
+
+
+def cache_metadata_to_dict(metadata: CacheMetadata) -> dict[str, Any]:
+    """JSON-ready dict of CacheMetadata (enum values as plain strings)."""
+    data = asdict(metadata)
+    if metadata.input_setting is not None:
+        data["input_setting"] = metadata.input_setting.value
+    return data
+
+
+def cache_metadata_from_dict(data: dict[str, Any]) -> CacheMetadata:
+    """Inverse of :func:`cache_metadata_to_dict`."""
+    data = dict(data)
+    if data.get("input_setting") is not None:
+        data["input_setting"] = InputSetting(data["input_setting"])
+    return CacheMetadata(**data)
 
 
 def validate_metadata_match(actual: CacheMetadata, expected: CacheMetadata) -> None:
@@ -77,21 +104,77 @@ def check_provider_for_run(metadata: CacheMetadata, config: RunConfig) -> None:
 
 
 class CacheProvider:
-    """Loads pre-extracted [N, 23, 768] layer vectors from disk (frozen backbone mode)."""
+    """Loads pre-extracted [N, 23, 768] layer vectors from disk (백본 고정 조건, ADR 0004).
+
+    Vectors are memory-mapped (``np.load(..., mmap_mode="r")``) in their stored dtype, so a
+    float16 MNLI cache (~14 GB) fits the 24 GB container limit. Consumers upcast each mini-batch
+    to float32 before computing. (Storing float16 was agreed on PR #8, docs/03-plan.md §8; it
+    becomes final when configs/week1_env.yaml ``cache_dtype`` is filled in T-04b PR 2.)
+    """
 
     def __init__(self, cache_dir: str) -> None:
-        self.cache_dir = cache_dir
-        raise NotImplementedError("TODO: Implement CacheProvider (T-04)")
+        self.cache_dir = Path(cache_dir)
+        meta_path = self.cache_dir / CACHE_METADATA_FILE
+        if not meta_path.is_file():
+            raise FileNotFoundError(f"no layer-vector cache at {self.cache_dir} ({meta_path.name})")
+        self._metadata = cache_metadata_from_dict(json.loads(meta_path.read_text("utf-8")))
 
     @property
     def metadata(self) -> CacheMetadata:
-        raise NotImplementedError
+        return self._metadata
+
+    @property
+    def splits(self) -> list[str]:
+        return sorted(
+            p.name
+            for p in self.cache_dir.iterdir()
+            if not p.name.endswith(PARTIAL_SUFFIX) and (p / VECTORS_FILE).is_file()
+        )
 
     def validate_for_run(self, config: RunConfig) -> None:
         check_provider_for_run(self.metadata, config)
 
     def get_split(self, split_name: str) -> LayerVectorBatch:
-        raise NotImplementedError
+        """Load one split, checking it against the cache metadata before handing it out.
+
+        Only the .npy headers are read for the shape/dtype checks; vectors stay memory-mapped.
+        """
+        split_dir = self.cache_dir / split_name
+        if split_name.endswith(PARTIAL_SUFFIX) or not (split_dir / VECTORS_FILE).is_file():
+            raise KeyError(f"split {split_name!r} not in cache {self.cache_dir} ({self.splits})")
+        vectors = np.load(split_dir / VECTORS_FILE, mmap_mode="r")
+        if vectors.ndim != 3 or vectors.shape[1:] != (NUM_LAYER_VECTORS, HIDDEN_SIZE):
+            raise ValueError(
+                f"{split_dir}: vectors must be [N, {NUM_LAYER_VECTORS}, {HIDDEN_SIZE}], "
+                f"got {vectors.shape}"
+            )
+        if vectors.dtype != np.dtype(self._metadata.dtype):
+            raise ValueError(
+                f"{split_dir}: vectors are {vectors.dtype}, metadata says {self._metadata.dtype}"
+            )
+        doc_ids = json.loads((split_dir / DOC_IDS_FILE).read_text("utf-8"))
+        labels = np.load(split_dir / LABELS_FILE)
+        token_lengths = None
+        if (split_dir / TOKEN_LENGTHS_FILE).is_file():
+            token_lengths = np.load(split_dir / TOKEN_LENGTHS_FILE).tolist()
+        genre_splits = None
+        if (split_dir / GENRE_SPLITS_FILE).is_file():
+            genre_splits = json.loads((split_dir / GENRE_SPLITS_FILE).read_text("utf-8"))
+        if not len(doc_ids) == len(labels) == vectors.shape[0]:
+            raise ValueError(f"{split_dir}: doc_ids, labels and vectors disagree in length")
+        for name, values in (("token_lengths", token_lengths), ("genre_splits", genre_splits)):
+            if values is not None and len(values) != len(doc_ids):
+                raise ValueError(
+                    f"{split_dir}: {name} has {len(values)} entries, expected {len(doc_ids)}"
+                )
+        return LayerVectorBatch(
+            doc_ids=doc_ids,
+            labels=labels,
+            vectors=vectors,
+            metadata=self._metadata,
+            genre_splits=genre_splits,
+            token_lengths=token_lengths,
+        )
 
 
 class BackboneProvider:
@@ -168,6 +251,11 @@ class FakeLayerVectorProvider:
 
         plan: dict[str, tuple[list[str], list[int], list[str | None] | None]] = {}
         if doc_records is not None:
+            unknown = sorted({r.split for r in doc_records} - set(SYNTHETIC_SPLITS))
+            if unknown:
+                # e.g. "tuning": select tuning docs by doc_id from the train split instead
+                # (decided on PR #11) rather than silently dropping them here.
+                raise ValueError(f"make_synthetic only builds {SYNTHETIC_SPLITS}, got {unknown}")
             for name in SYNTHETIC_SPLITS:
                 rows = [r for r in doc_records if r.split == name]
                 genres = [r.genre_split for r in rows]

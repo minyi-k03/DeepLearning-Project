@@ -1,6 +1,8 @@
-"""Layer vector provider tests (T-04a): synthetic fake provider and run/cache validation."""
+"""Layer vector provider tests (T-04a/b): fake provider, run/cache validation, cache loading."""
 
+import json
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -16,7 +18,16 @@ from layer_fusion.contracts import (
     RunConfig,
     RunKind,
 )
-from layer_fusion.providers import CacheConfigMismatchError, FakeLayerVectorProvider
+from layer_fusion.extraction import save_layer_cache
+from layer_fusion.providers import (
+    GENRE_SPLITS_FILE,
+    PARTIAL_SUFFIX,
+    TOKEN_LENGTHS_FILE,
+    VECTORS_FILE,
+    CacheConfigMismatchError,
+    CacheProvider,
+    FakeLayerVectorProvider,
+)
 
 
 def _config(**overrides: object) -> RunConfig:
@@ -129,3 +140,74 @@ def test_main_run_requires_expected_metadata() -> None:
     with pytest.raises(CacheConfigMismatchError, match="expected_cache_meta"):
         provider.validate_for_run(_config(run_kind=RunKind.MAIN))
     provider.validate_for_run(_config(run_kind=RunKind.DEBUG))  # debug runs may skip it
+
+
+# --- CacheProvider.get_split load checks (T-04b, PR #12 review) ---------------------------
+
+
+def _saved_cache(tmp_path: Path, metadata: CacheMetadata) -> Path:
+    """A valid 4-row float32 train split with token lengths and genres; returns its split dir."""
+    vectors = np.zeros((4, 23, 768), dtype=np.float32)
+    return save_layer_cache(
+        tmp_path, "train", vectors, ["a", "b", "c", "d"], [0, 1, 0, 1], metadata,
+        token_lengths=[5, 6, 7, 8], genre_splits=["matched", "matched", None, None],
+    )
+
+
+def test_valid_cache_split_loads_memory_mapped(
+    tmp_path: Path, sample_cache_metadata: CacheMetadata
+) -> None:
+    _saved_cache(tmp_path, sample_cache_metadata)
+    batch = CacheProvider(str(tmp_path)).get_split("train")
+    assert isinstance(batch.vectors, np.memmap)
+    assert batch.doc_ids == ["a", "b", "c", "d"]
+
+
+@pytest.mark.parametrize(
+    "bad_vectors",
+    [np.zeros((4, 22, 768), np.float32), np.zeros((4, 23, 767), np.float32)],
+    ids=["22-layers", "767-hidden"],
+)
+def test_cache_split_with_wrong_vector_shape_is_rejected(
+    tmp_path: Path, sample_cache_metadata: CacheMetadata, bad_vectors: np.ndarray
+) -> None:
+    split_dir = _saved_cache(tmp_path, sample_cache_metadata)
+    np.save(split_dir / VECTORS_FILE, bad_vectors)
+    with pytest.raises(ValueError, match="vectors must be"):
+        CacheProvider(str(tmp_path)).get_split("train")
+
+
+def test_cache_split_with_dtype_other_than_metadata_is_rejected(
+    tmp_path: Path, sample_cache_metadata: CacheMetadata
+) -> None:
+    split_dir = _saved_cache(tmp_path, sample_cache_metadata)  # metadata says float32
+    np.save(split_dir / VECTORS_FILE, np.zeros((4, 23, 768), np.float16))
+    with pytest.raises(ValueError, match="metadata says float32"):
+        CacheProvider(str(tmp_path)).get_split("train")
+
+
+def test_cache_split_with_short_token_lengths_is_rejected(
+    tmp_path: Path, sample_cache_metadata: CacheMetadata
+) -> None:
+    split_dir = _saved_cache(tmp_path, sample_cache_metadata)
+    np.save(split_dir / TOKEN_LENGTHS_FILE, np.asarray([5, 6, 7], dtype=np.int64))
+    with pytest.raises(ValueError, match="token_lengths has 3 entries"):
+        CacheProvider(str(tmp_path)).get_split("train")
+
+
+def test_cache_split_with_short_genre_splits_is_rejected(
+    tmp_path: Path, sample_cache_metadata: CacheMetadata
+) -> None:
+    split_dir = _saved_cache(tmp_path, sample_cache_metadata)
+    (split_dir / GENRE_SPLITS_FILE).write_text(json.dumps(["matched"]), encoding="utf-8")
+    with pytest.raises(ValueError, match="genre_splits has 1 entries"):
+        CacheProvider(str(tmp_path)).get_split("train")
+
+
+def test_partial_split_cannot_be_loaded_by_name(
+    tmp_path: Path, sample_cache_metadata: CacheMetadata
+) -> None:
+    split_dir = _saved_cache(tmp_path, sample_cache_metadata)
+    split_dir.rename(tmp_path / f"train{PARTIAL_SUFFIX}")  # as left by an interrupted save
+    with pytest.raises(KeyError, match="not in cache"):
+        CacheProvider(str(tmp_path)).get_split(f"train{PARTIAL_SUFFIX}")
