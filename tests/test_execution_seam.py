@@ -31,7 +31,10 @@ def test_f2_global_and_local_subsets_exclude_embedding() -> None:
     raise NotImplementedError
 
 
-@pytest.mark.skip(reason="TODO(T-03 / T-06): Enable after small-data sampling is wired")
+@pytest.mark.skip(
+    reason="TODO(T-06a): Enable when run_experiment wires DataAmount.SMALL into ResultRecord "
+    "(data-level sampling is covered by tests/test_data.py)"
+)
 def test_small_data_sampling_shared_within_seed_and_varies_across_seeds() -> None:
     """1,000 per class; same doc_ids per seed across fusion methods, distinct across seeds."""
     raise NotImplementedError
