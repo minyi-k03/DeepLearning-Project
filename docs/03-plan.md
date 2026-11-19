@@ -167,7 +167,7 @@
 | ID | 상태 | 제목 | US | 마감 | 담당 | Blocked by | 완료 조건 | 확인 방법 | 공통 | 위험 | 병렬 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | T-04a | ✅ **완료** (PR #8 병합: 가짜 공급원·실행 전 설정 검사) | 공급원 인터페이스 확정, `FakeLayerVectorProvider.make_synthetic`, 생성 설정 불일치 오류 | 26 | 11/19(목) | 차가원 | T-01c | 가짜 공급원으로 실행 seam 테스트를 작성할 수 있음, 설정이 다르면 `CacheConfigMismatchError` | `test_mismatched_provider_metadata_raises_error` un-skip | 예 | 보통 | ○ |
-| T-04b | ⬜ 대기 | 층 벡터 추출기·캐시 writer·`CacheProvider`: [N, 23, 768] + doc_id·라벨 순서 + 생성 설정(모델·버전·길이·자르기 방식) | 21–23, 25, 27 | 11/24(화) | 차가원 | T-02a, T-03b | 패딩 제외 평균, 짧은 문서는 L512 = Lfull, 순서 일치 | Seam ③ 나머지 5개 un-skip (`tests/test_extraction.py`) | 아니오 | 높음 | — |
+| T-04b | 🔄 **진행** (PR 1: 추출기·캐시 writer·`CacheProvider`, Seam ③ 전부 통과 / PR 2 남음: CLI·float16 실측·`week1_env.yaml`) | 층 벡터 추출기·캐시 writer·`CacheProvider`: [N, 23, 768] + doc_id·라벨 순서 + 생성 설정(모델·버전·길이·자르기 방식) | 21–23, 25, 27 | 11/24(화) | 차가원 | T-02a, T-03b | 패딩 제외 평균, 짧은 문서는 L512 = Lfull, 순서 일치 | Seam ③ 나머지 5개 un-skip (`tests/test_extraction.py`) | 아니오 | 높음 | — |
 
 ### T-05 결합 헤드 — ⬜ 대기
 
@@ -302,7 +302,7 @@ T-01c ─┬─▶ T-03a ─┐                                           │   
 
 Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 세션 로그와 마지막 verify만 남긴다. 옛 `docs/progress.md`의 로그를 옮겼다(T-01c 항목에는 남은 결정 한 문장을 덧붙였다).
 
-**마지막 verify**: 2026-11-18 Gawoun(PR #8), Python 3.11 및 로컬 모델 캐시 사용 (40 passed, 22 skipped). torch·transformers 없는 환경에서는 실제 모델 테스트 3~4개가 skip된다.
+**마지막 verify**: 2026-11-19 Gawoun(PR #12 리뷰 반영, main 병합 후), Python 3.11 및 로컬 모델 캐시 사용 (112 passed, 18 skipped). torch·transformers 없는 환경에서는 실제 모델 테스트 3~4개가 skip된다.
 
 - 2026-11-15 · 초기 스캐폴딩 생성: `SPEC.md`, `GLOSSARY.md`, `docs/adr/0001`–`0009`를 바탕으로 패키지 구조, 설정 템플릿, 테스트 스켈레톤, 하네스 파일 생성.
 - 2026-11-15 · T-01a(차가원): Python 3.11 venv, `requirements.lock`(uv, universal) 생성, 새 환경에서 잠금 파일 설치 후 `python scripts/verify.py` ALL PASSED(5 passed, 26 skipped). README 설치 절차 갱신.
@@ -327,3 +327,5 @@ Task별 상태는 §4 표의 "상태" 열이 기준이고, 이 절에는 세션 
 - 2026-11-18 · 규칙 추가(차가원·고용민 합의): 상태가 PR 병합보다 한 단계씩 늦게 main에 반영되던 문제(T-01d·T-03b·T-04a) 때문에, §0에 "상태 변경은 Task를 끝내는 PR 안에 함께 넣는다" 규칙을 추가. §0은 사람만 고치는 부분이라 두 사람 합의를 근거로 수정.
 - 2026-11-18 · T-03a PR #11(고용민): §0 규칙에 따라 PR 안에서 T-03a를 `✅ 완료 (PR #11 병합 시)`로, T-03b가 이미 완료라 T-03 묶음 제목도 ✅로 갱신. 리뷰 중 막히면 👀/⛔로 되돌린다.
 - 2026-11-18 · 튜닝 분할 방식 팀 결정(고용민·차가원, PR #11 리뷰): **라벨 층화**로 정함 — 클래스마다 `round(0.1 × 클래스 크기)`건(.5는 짝수 쪽으로 반올림), 0건이거나 클래스 전체가 되면 오류. 차가원이 코드·건수를 직접 확인: MNLI 39,270 / SST-2 6,735 / IMDB 2,500(세 데이터셋 모두 .5로 떨어지는 클래스 없음). 장르 층화는 아님(GLUE MNLI 열이 `premise, hypothesis, label, idx`뿐). SST-2는 클래스 비율이 학습 44.2 : 55.8 / 평가 49.1 : 50.9로 불균형이라 튜닝 분할에도 그대로 남으며, 보고서 한계 절에 적는다. **여전히 열린 항목(SPEC 미정, 값은 정하지 않음)**: 튜닝 분할을 시드마다 다시 뽑을지는 차가원 T-06a 설계(시드별 표본을 한 번 만들어 모든 결합 방식이 공유)와 연결되므로 **T-06a 시작 전(11/25 전)에** 함께 정함. 소량 표본이 튜닝 분할 문서를 포함할지·소량 조건의 튜닝 분할도 같은 시점에 정함.
+- 2026-11-19 · T-04b PR 1(차가원): `TokenizedInputs` 데이터클래스·배치 토크나이징·문서별 시야 비율(US 18), `extract_layer_vectors`(층마다 즉시 패딩 제외 평균, 길이순 배치 후 원래 순서 복원, memmap 출력 가능, 고정 transformers 버전 확인, float16 범위 검사·왕복 오차 보고), `save_layer_cache`(`<dir>/metadata.json` + `<split>/vectors.npy` 등, `<split>.partial`에 쓰고 성공 시 이름 변경, 기존 분할 덮어쓰기 거부), `CacheProvider`(memmap 로드). `max_length_cap`은 설정별 고정값(128/512/상한). `make_synthetic`은 train/eval 외 split 거부(PR #11 합의). Seam ③ 남은 4개 un-skip, `/code-review` 반영. verify ALL PASSED(62 passed, 18 skipped). **PR 2(데이터 모듈 PR #11 병합 후)**: `scripts/extract_cache.py`, float16 범위 실측, `week1_env.yaml`의 `cache_dtype`·`include_special_tokens_in_pool` 기록, 시야 비율·토큰 길이 저장.
+- 2026-11-19 · T-04b PR #12 리뷰 반영(차가원): 고용민 교차검증 반영 — 층 벡터에 NaN/inf가 있으면 배치마다 멈춤(float32·float16 모두, `check_float16_range`도 NaN 차단: 누적 `max()`가 NaN을 버려서 손상 캐시가 통과할 수 있었음), `CacheProvider.get_split`이 형태 [N, 23, 768]·dtype(메타데이터와 일치)·`token_lengths`/`genre_splits` 길이를 확인하고 `.partial` 이름은 거부, 장르 없는 데이터(SST-2·IMDB)는 `genre_splits=None`, 밖에서 넘긴 모델의 `attn_implementation`이 기록값과 다르면 오류. §8 상태 요약 절은 되돌림(상태 기준은 §4 표 하나). **PR #8 합의 변경 기록**: "로드 시 float32" 대신 `CacheProvider`는 memmap으로 저장 dtype 그대로 돌려주고 소비자(T-06a)가 미니배치마다 float32로 올림 — MNLI 학습 캐시가 float32 약 28GB / float16 약 14GB라 24GB 메모리 제한에서 통째로 float32 변환이 불가하기 때문. `truncation_rule` 이름(`head_32_tail_94`·`head_128_tail_382`·`none`)은 고용민 확인으로 확정. `CacheMetadata` 데이터셋 필드는 고용민 계약 PR(SPEC → contracts → tests) 병합 후 T-04b PR 2에서 맞춤. PR 2로 넘긴 정리: `_max_length_cap`을 `inputs.py`로, `save_layer_cache`가 묶음 타입을 받게, `ExtractionResult.report` 데이터클래스화.

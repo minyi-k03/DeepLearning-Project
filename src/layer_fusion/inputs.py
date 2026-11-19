@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from layer_fusion.contracts import DocumentRecord, InputSetting, LengthBucket
@@ -50,8 +52,30 @@ def truncation_rule_name(input_setting: InputSetting | None) -> str:
     return "none"
 
 
-def _content_ids(tokenizer: Any, text: str) -> list[int]:
-    return list(tokenizer(text, add_special_tokens=False)["input_ids"])
+@dataclass(frozen=True)
+class TokenizedInputs:
+    """Per-document model inputs, all lists aligned with the input record order.
+
+    ``input_ids`` are unpadded (padding happens per batch in the extractor). ``token_lengths`` are
+    lengths *before* truncation with special tokens; ``length_buckets`` use them (IMDB only).
+    ``view_ratios`` are local-layer view ratios of the actual model input (SPEC US 18).
+    """
+
+    doc_ids: list[str]
+    input_ids: list[list[int]]
+    token_lengths: list[int]
+    input_lengths: list[int]
+    length_buckets: list[LengthBucket] | None
+    truncated: list[bool]
+    truncated_doc_ratio: float
+    view_ratios: list[float]
+
+
+def _batch_content_ids(tokenizer: Any, texts: Sequence[str]) -> list[list[int]]:
+    """Tokenize many texts in one call (MNLI has ~390k pairs) without special tokens."""
+    if not texts:
+        return []
+    return [list(ids) for ids in tokenizer(list(texts), add_special_tokens=False)["input_ids"]]
 
 
 def build_tokenized_inputs(
@@ -59,13 +83,8 @@ def build_tokenized_inputs(
     tokenizer: Any,
     input_setting: InputSetting | None = None,
     lfull_max_length_cap: int | None = None,
-) -> dict[str, Any]:
+) -> TokenizedInputs:
     """Tokenize documents: [SEP]-joined pairs for MNLI, 앞+뒤 자르기 for IMDB (GLOSSARY).
-
-    Returns unpadded per-document token ids (padding happens when batching in T-04b) plus
-    ``token_lengths`` (before truncation, special tokens included), ``input_lengths``
-    (after truncation), ``length_buckets`` (IMDB only, from the untruncated length),
-    ``truncated`` flags and ``truncated_doc_ratio``.
 
     - ``input_setting is None`` (MNLI / SST-2): ``[CLS] a [SEP]`` or ``[CLS] a [SEP] b [SEP]``,
       never truncated (SPEC US 2).
@@ -78,24 +97,30 @@ def build_tokenized_inputs(
     """
     if input_setting is InputSetting.LFULL and lfull_max_length_cap is None:
         raise ValueError("Lfull requires lfull_max_length_cap (configs/week1_env.yaml)")
+    if input_setting is not None:
+        for record in records:
+            if record.text_b is not None:
+                raise ValueError(
+                    f"{input_setting.value} expects a single text per document, "
+                    f"but {record.doc_id!r} has text_b"
+                )
 
     cls_id, sep_id = tokenizer.cls_token_id, tokenizer.sep_token_id
-    doc_ids: list[str] = []
+    ids_a_all = _batch_content_ids(tokenizer, [r.text_a for r in records])
+    ids_b_iter = iter(
+        _batch_content_ids(tokenizer, [r.text_b for r in records if r.text_b is not None])
+    )
+
     input_ids: list[list[int]] = []
     token_lengths: list[int] = []
     truncated: list[bool] = []
-
-    for record in records:
-        if input_setting is not None and record.text_b is not None:
-            raise ValueError(
-                f"{input_setting.value} expects a single text per document, "
-                f"but {record.doc_id!r} has text_b"
-            )
-        ids_a = _content_ids(tokenizer, record.text_a)
+    for record, ids_a in zip(records, ids_a_all, strict=True):
         if record.text_b is not None:
-            full = [cls_id, *ids_a, sep_id, *_content_ids(tokenizer, record.text_b), sep_id]
+            full = [cls_id, *ids_a, sep_id, *next(ids_b_iter), sep_id]
         else:
             full = [cls_id, *ids_a, sep_id]
+        # Untruncated length with special tokens, taken before any cut below.
+        token_lengths.append(len(full))
 
         cut = False
         if input_setting in TRUNCATION_BUDGETS:
@@ -108,23 +133,19 @@ def build_tokenized_inputs(
                 f"{record.doc_id!r} has {len(full)} tokens > Lfull cap {lfull_max_length_cap}; "
                 "ADR 0006 keeps the cap but does not decide which part to keep"
             )
-
-        doc_ids.append(record.doc_id)
-        # Untruncated length with special tokens. Paired inputs (MNLI) are never cut, so `full`
-        # is already untruncated there; single texts may have been cut, so rebuild from ids_a.
-        untruncated_len = len(full) if record.text_b is not None else len(ids_a) + 2
-        token_lengths.append(untruncated_len)
         input_ids.append(full)
         truncated.append(cut)
 
-    return {
-        "doc_ids": doc_ids,
-        "input_ids": input_ids,
-        "token_lengths": token_lengths,
-        "input_lengths": [len(ids) for ids in input_ids],
-        "length_buckets": (
+    input_lengths = [len(ids) for ids in input_ids]
+    return TokenizedInputs(
+        doc_ids=[r.doc_id for r in records],
+        input_ids=input_ids,
+        token_lengths=token_lengths,
+        input_lengths=input_lengths,
+        length_buckets=(
             [assign_length_bucket(n) for n in token_lengths] if input_setting is not None else None
         ),
-        "truncated": truncated,
-        "truncated_doc_ratio": (sum(truncated) / len(truncated)) if truncated else 0.0,
-    }
+        truncated=truncated,
+        truncated_doc_ratio=(sum(truncated) / len(truncated)) if truncated else 0.0,
+        view_ratios=[compute_view_ratio(n) for n in input_lengths],
+    )
