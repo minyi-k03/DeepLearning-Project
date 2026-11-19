@@ -22,9 +22,25 @@ from layer_fusion.contracts import (  # noqa: E402
     InputSetting,
     LengthBucket,
     RunKind,
+    TrackKind,
 )
 from layer_fusion.providers import FakeLayerVectorProvider  # noqa: E402
 from layer_fusion.runner import make_run_id, run_experiment  # noqa: E402
+from layer_fusion.training import TrainingDivergedError  # noqa: E402
+
+
+def _imdb_l512_metadata() -> CacheMetadata:
+    return CacheMetadata(
+        model_name="answerdotai/ModernBERT-base",
+        transformers_version="5.23.0",
+        attn_implementation="sdpa",
+        torch_compile=False,
+        input_setting=InputSetting.L512,
+        max_length_cap=512,
+        truncation_rule="head_128_tail_382",
+        include_special_tokens_in_pool=True,
+        dtype="float32",
+    )
 
 
 def _predictions(record):  # type: ignore[no-untyped-def]
@@ -102,9 +118,12 @@ def test_early_stopping_restores_best_tuning_epoch(noisy_provider) -> None:  # t
         device=device,
     )
     errors = [row["tuning_error"] for row in outcome.learning_curve]
-    best_epoch = int(np.argmin(errors)) + 1  # first minimum: only strict decreases count
+    scores = [(row["tuning_error"], row["tuning_loss"]) for row in outcome.learning_curve]
+    # (error, loss) lexicographic, first minimum: ties on both never count as an improvement
+    best_epoch = min(range(len(scores)), key=lambda i: (scores[i], i)) + 1
     assert outcome.best_epoch == best_epoch
     assert outcome.best_tuning_error == errors[best_epoch - 1]
+    assert not outcome.diverged
     # Stopped exactly `patience` epochs after the best one (or ran out of epochs).
     assert len(errors) == min(12, best_epoch + 2)
     _, restored_error, _ = evaluate(head, tuning_view, 32, device)
@@ -121,17 +140,7 @@ def test_float16_cache_is_upcast_per_batch(noisy_provider, make_run_config) -> N
 def test_imdb_records_carry_length_buckets_and_truncated_ratio(
     noisy_provider, make_run_config
 ) -> None:  # type: ignore[no-untyped-def]
-    meta = CacheMetadata(
-        model_name="answerdotai/ModernBERT-base",
-        transformers_version="5.23.0",
-        attn_implementation="sdpa",
-        torch_compile=False,
-        input_setting=InputSetting.L512,
-        max_length_cap=512,
-        truncation_rule="head_128_tail_382",
-        include_special_tokens_in_pool=True,
-        dtype="float32",
-    )
+    meta = _imdb_l512_metadata()
     base = noisy_provider(num_classes=2, eval_size=40, metadata=meta)
     lengths = [100, 600, 1500, 512] * 10
     provider = FakeLayerVectorProvider(
@@ -156,9 +165,135 @@ def test_imdb_records_carry_length_buckets_and_truncated_ratio(
     assert record.eval_error_rate_matched is None and record.eval_error_rate_mismatched is None
 
 
+def test_early_stopping_counts_equal_error_with_lower_loss_as_improvement(
+    noisy_provider, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """Same tuning error but lower tuning loss resets patience (same order as the LR tie-break)."""
+    from layer_fusion import training
+    from layer_fusion.fusion import build_fusion_head
+
+    provider = noisy_provider()
+    train = provider.get_split("train")
+    rows = np.arange(len(train.doc_ids))
+    # Tuning error stays 0.5 every epoch while the loss keeps falling.
+    losses = iter([1.0, 0.9, 0.8, 0.7])
+    monkeypatch.setattr(
+        training, "evaluate", lambda *a, **k: (next(losses), 0.5, np.zeros(0, dtype=np.int64))
+    )
+    _, outcome = training.train_head(
+        lambda: build_fusion_head(FusionMethod.B0, 3),
+        training.RowView(train.vectors, train.labels, rows[:240]),
+        training.RowView(train.vectors, train.labels, rows[240:]),
+        lr=1e-3,
+        epochs=4,
+        patience=1,
+        batch_size=64,
+        seed=0,
+        device=torch.device("cpu"),
+    )
+    assert len(outcome.learning_curve) == 4  # never stopped early
+    assert outcome.best_epoch == 4 and outcome.best_tuning_loss == pytest.approx(0.7)
+
+
+def test_train_head_rejects_empty_budget(noisy_provider) -> None:  # type: ignore[no-untyped-def]
+    from layer_fusion.fusion import build_fusion_head
+    from layer_fusion.training import RowView, train_head
+
+    train = noisy_provider().get_split("train")
+    view = RowView(train.vectors, train.labels, np.arange(10))
+    kwargs = dict(lr=1e-3, epochs=1, patience=1, batch_size=8, seed=0, device=torch.device("cpu"))
+    for bad in ({"epochs": 0}, {"patience": 0}, {"batch_size": 0}, {"lr": float("inf")}):
+        with pytest.raises(ValueError):
+            train_head(
+                lambda: build_fusion_head(FusionMethod.B0, 3), view, view, **{**kwargs, **bad}
+            )
+
+
+def test_optimizer_decays_weight_matrices_only() -> None:
+    """Decay on F2 layer logits would pull F2 towards uniform weights (= F1); biases neither."""
+    from layer_fusion.fusion import build_fusion_head
+    from layer_fusion.training import WEIGHT_DECAY, make_optimizer
+
+    head = build_fusion_head(FusionMethod.F2, 3)
+    decay_of = {
+        id(p): group["weight_decay"]
+        for group in make_optimizer(head, 1e-3).param_groups
+        for p in group["params"]
+    }
+    named = dict(head.named_parameters())
+    assert len(decay_of) == len(named)
+    assert decay_of[id(named["classifier.weight"])] == WEIGHT_DECAY
+    assert decay_of[id(named["classifier.bias"])] == 0.0
+    assert decay_of[id(named["layer_logits"])] == 0.0
+
+
+def test_diverged_candidate_is_excluded_from_selection(noisy_provider, make_run_config) -> None:  # type: ignore[no-untyped-def]
+    provider = noisy_provider()
+    config = make_run_config(provider, lr_candidates=(1e10, 1e-3, 1e-1))
+    record = run_experiment(config, provider, device="cpu")
+    assert record.lr_tuning_scores[1e10] == float("inf")
+    assert record.selected_lr != 1e10
+    assert all(np.isfinite(w) for w in record.layer_weights or [])
+
+
+def test_all_candidates_diverging_raises(noisy_provider, make_run_config) -> None:  # type: ignore[no-untyped-def]
+    provider = noisy_provider()
+    config = make_run_config(provider, run_kind=RunKind.DEBUG, lr_candidates=(1e10,))
+    with pytest.raises(TrainingDivergedError):
+        run_experiment(config, provider, device="cpu")
+    fixed = make_run_config(
+        provider, lr_candidates=(1e-3, 1e-1, 1e10), fixed_lr=1e10, lr_selection_seed=0
+    )
+    with pytest.raises(TrainingDivergedError):
+        run_experiment(fixed, provider, device="cpu")
+
+
+def test_non_finite_input_vectors_are_rejected(noisy_provider, make_run_config) -> None:  # type: ignore[no-untyped-def]
+    base = noisy_provider()
+    train = base.get_split("train")
+    poisoned = train.vectors.copy()
+    poisoned[0, 0, 0] = np.nan
+    provider = FakeLayerVectorProvider(
+        {"train": replace(train, vectors=poisoned), "eval": base.get_split("eval")},
+        base.metadata,
+    )
+    with pytest.raises(TrainingDivergedError):
+        run_experiment(make_run_config(provider, epochs=1), provider, device="cpu")
+
+    eval_batch = base.get_split("eval")
+    poisoned_eval = eval_batch.vectors.copy()
+    poisoned_eval[0, 0, 0] = np.inf
+    provider = FakeLayerVectorProvider(
+        {"train": train, "eval": replace(eval_batch, vectors=poisoned_eval)}, base.metadata
+    )
+    with pytest.raises(ValueError, match="eval loss"):
+        run_experiment(make_run_config(provider, epochs=1), provider, device="cpu")
+
+
+def test_time_fields_split_training_and_tuning_evaluation(noisy_provider, make_run_config) -> None:  # type: ignore[no-untyped-def]
+    provider = noisy_provider()
+    record = run_experiment(make_run_config(provider), provider, device="cpu")
+    assert record.train_seconds > 0
+    assert record.tuning_eval_seconds is not None and record.tuning_eval_seconds > 0
+    assert record.lr_search_seconds is not None
+    assert record.lr_search_seconds >= record.train_seconds + record.tuning_eval_seconds
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_run_does_not_touch_global_cuda_rng(noisy_provider, make_run_config) -> None:  # type: ignore[no-untyped-def]
+    provider = noisy_provider()
+    torch.cuda.manual_seed_all(123)
+    expected = torch.rand(3, device="cuda")
+    torch.cuda.manual_seed_all(123)
+    run_experiment(make_run_config(provider, epochs=1), provider, device="cuda")
+    assert torch.equal(torch.rand(3, device="cuda"), expected)
+
+
 def test_run_id_is_deterministic(noisy_provider, make_run_config) -> None:  # type: ignore[no-untyped-def]
     config = make_run_config(noisy_provider(), seed=3, run_kind=RunKind.DEBUG)
     assert make_run_id(config) == "mnli-full-F2-all-frozen-none-s3-debug"
+    repro = replace(config, track=TrackKind.REPRODUCTION)
+    assert make_run_id(repro) == "repro-mnli-full-F2-all-frozen-none-s3-debug"
 
 
 @pytest.mark.parametrize(
@@ -167,6 +302,12 @@ def test_run_id_is_deterministic(noisy_provider, make_run_config) -> None:  # ty
         ({"epochs": None}, ValueError),
         ({"batch_size": 0}, ValueError),
         ({"early_stopping_patience": None}, ValueError),
+        ({"early_stopping_patience": 0}, ValueError),  # would behave exactly like 1
+        ({"lr_candidates": (1e-3, float("inf"), 1e-1)}, ValueError),
+        ({"lr_candidates": (1e-3, float("nan"), 1e-1)}, ValueError),
+        ({"track": TrackKind.REPRODUCTION}, ValueError),  # run_reproduction_track's job
+        ({"dataset": DatasetName.IMDB}, ValueError),  # IMDB without input_setting
+        ({"dataset": DatasetName.SST2, "input_setting": InputSetting.L512}, ValueError),
         ({"lr_candidates": ()}, ValueError),
         ({"lr_candidates": (1e-3, 1e-2)}, ValueError),  # main runs need exactly 3 (ADR 0007)
         ({"lr_candidates": (1e-3, 1e-3, 1e-2)}, ValueError),
@@ -200,14 +341,45 @@ def test_labels_outside_dataset_classes_are_rejected(noisy_provider, make_run_co
         run_experiment(config, provider, device="cpu")
 
 
-def test_mnli_without_genres_is_rejected(noisy_provider, make_run_config) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("bad_genre", [None, "telephone"])
+def test_mnli_with_missing_or_unknown_genres_is_rejected(
+    noisy_provider, make_run_config, bad_genre
+) -> None:  # type: ignore[no-untyped-def]
     base = noisy_provider()
+    eval_batch = base.get_split("eval")
+    if bad_genre is None:
+        genres = None
+    else:  # one document outside matched/mismatched would silently drop out of both rates
+        genres = [bad_genre, *eval_batch.genre_splits[1:]]
     provider = FakeLayerVectorProvider(
-        {
-            "train": base.get_split("train"),
-            "eval": replace(base.get_split("eval"), genre_splits=None),
-        },
+        {"train": base.get_split("train"), "eval": replace(eval_batch, genre_splits=genres)},
         base.metadata,
     )
     with pytest.raises(ValueError, match="matched"):
         run_experiment(make_run_config(provider, epochs=1), provider, device="cpu")
+
+
+def test_imdb_eval_without_token_lengths_is_rejected(noisy_provider, make_run_config) -> None:  # type: ignore[no-untyped-def]
+    base = noisy_provider(num_classes=2, metadata=_imdb_l512_metadata())
+    provider = FakeLayerVectorProvider(
+        {
+            "train": base.get_split("train"),
+            "eval": replace(base.get_split("eval"), token_lengths=None),
+        },
+        base.metadata,
+    )
+    config = make_run_config(
+        provider, dataset=DatasetName.IMDB, input_setting=InputSetting.L512, epochs=1
+    )
+    with pytest.raises(ValueError, match="token_lengths"):
+        run_experiment(config, provider, device="cpu")
+
+
+def test_input_setting_on_non_imdb_dataset_is_rejected(noisy_provider, make_run_config) -> None:  # type: ignore[no-untyped-def]
+    # Provider metadata agrees with the run, so only the dataset rule can reject it.
+    provider = noisy_provider(num_classes=2, metadata=_imdb_l512_metadata())
+    config = make_run_config(
+        provider, dataset=DatasetName.SST2, input_setting=InputSetting.L512, epochs=1
+    )
+    with pytest.raises(ValueError, match="IMDB only"):
+        run_experiment(config, provider, device="cpu")

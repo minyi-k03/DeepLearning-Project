@@ -36,6 +36,7 @@ def noisy_provider():  # type: ignore[no-untyped-def]
     """
     from dataclasses import replace
 
+    from layer_fusion.layers import HIDDEN_SIZE, NUM_LAYER_VECTORS
     from layer_fusion.providers import FakeLayerVectorProvider
 
     def make(
@@ -55,7 +56,7 @@ def noisy_provider():  # type: ignore[no-untyped-def]
             metadata=metadata,
         )
         rng = np.random.default_rng(seed + 1)
-        class_direction = rng.normal(size=(num_classes, 23, 768))
+        class_direction = rng.normal(size=(num_classes, NUM_LAYER_VECTORS, HIDDEN_SIZE))
         splits = {}
         for name in ("train", "eval"):
             batch = base.get_split(name)

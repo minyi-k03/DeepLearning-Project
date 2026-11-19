@@ -5,7 +5,9 @@ References: docs/SPEC.md, ADR 0004, ADR 0009.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -19,6 +21,7 @@ from layer_fusion.contracts import (
     ResultRecord,
     RunConfig,
     RunKind,
+    TrackKind,
 )
 from layer_fusion.data import (
     DATASET_SPECS,
@@ -34,13 +37,19 @@ TUNING_SPLIT_SEED = 0
 TUNING_FRACTION = 0.10  # GLOSSARY 튜닝 분할: 학습셋의 10%
 SMALL_PER_CLASS = 1000  # GLOSSARY 데이터 양 조건 "소량": 클래스당 1,000건
 NUM_MAIN_LR_CANDIDATES = 3  # ADR 0007 튜닝 예산: 학습률 후보 3개
+MNLI_GENRES = frozenset({"matched", "mismatched"})
 
 
 def make_run_id(config: RunConfig) -> str:
-    """Deterministic run id built from the setting (T-06b may add a timestamp to file names)."""
+    """Deterministic run id built from the setting (T-06b may add a timestamp to file names).
+
+    Reproduction-track ids start with ``repro-`` so they never collide with main-track ids.
+    """
     input_setting = config.input_setting.value if config.input_setting else "none"
+    prefix = ["repro"] if config.track == TrackKind.REPRODUCTION else []
     return "-".join(
-        [
+        prefix
+        + [
             config.dataset.value,
             config.data_amount.value,
             config.fusion_method.value,
@@ -64,16 +73,20 @@ def check_training_budget(config: RunConfig) -> None:
         value = getattr(config, name)
         if value is None or value < 1:
             raise ValueError(f"RunConfig.{name} must be a positive integer, got {value}")
-    if config.early_stopping_patience is None or config.early_stopping_patience < 0:
+    if config.early_stopping_patience is None or config.early_stopping_patience < 1:
         raise ValueError(
-            "RunConfig.early_stopping_patience must be >= 0, "
+            "RunConfig.early_stopping_patience must be >= 1, "
             f"got {config.early_stopping_patience}"
         )
     candidates = config.lr_candidates
     if not candidates:
         raise ValueError("RunConfig.lr_candidates is empty")
-    if len(set(candidates)) != len(candidates) or any(lr <= 0 for lr in candidates):
-        raise ValueError(f"lr_candidates must be distinct and positive, got {candidates}")
+    if len(set(candidates)) != len(candidates) or not all(
+        math.isfinite(lr) and lr > 0 for lr in candidates
+    ):
+        raise ValueError(
+            f"lr_candidates must be distinct finite positive numbers, got {candidates}"
+        )
     if config.run_kind == RunKind.MAIN and len(candidates) != NUM_MAIN_LR_CANDIDATES:
         raise ValueError(
             f"main runs need exactly {NUM_MAIN_LR_CANDIDATES} lr_candidates (ADR 0007), "
@@ -96,6 +109,60 @@ def _check_labels(batch: LayerVectorBatch, num_classes: int, split: str) -> None
             f"{split} labels must lie in range({num_classes}), "
             f"got {int(labels.min())}..{int(labels.max())}"
         )
+
+
+def _check_run_inputs(config: RunConfig, eval_batch: LayerVectorBatch) -> None:
+    """Reject settings and eval splits that would silently drop report fields (PR #15 review)."""
+    if config.track == TrackKind.REPRODUCTION:
+        raise ValueError(
+            "run_experiment is the main-track frozen seam; the reproduction track runs through "
+            "run_reproduction_track (ADR 0004)"
+        )
+    if config.dataset == DatasetName.IMDB:
+        if config.input_setting is None:
+            raise ValueError("IMDB runs need RunConfig.input_setting (L128/L512/Lfull)")
+        if eval_batch.token_lengths is None:
+            raise ValueError("IMDB eval split needs token_lengths for the length buckets (US 6)")
+    elif config.input_setting is not None:
+        raise ValueError(
+            f"input_setting applies to IMDB only, got {config.input_setting} for {config.dataset}"
+        )
+    if config.dataset == DatasetName.MNLI:
+        if eval_batch.genre_splits is None:
+            raise ValueError("MNLI eval split needs genre_splits (matched / mismatched, US 5)")
+        unknown = set(eval_batch.genre_splits) - MNLI_GENRES
+        if unknown:
+            raise ValueError(
+                f"MNLI genre_splits must be in {sorted(MNLI_GENRES)}, got {sorted(unknown)}"
+            )
+
+
+@dataclass
+class _Candidate:
+    """One trained LR candidate of a run."""
+
+    lr: float
+    head: Any  # torch.nn.Module (torch is imported lazily)
+    outcome: Any  # training.TrainOutcome
+
+
+def _select_candidate(candidates: list[_Candidate]) -> _Candidate:
+    """Lowest (tuning error, tuning loss), then candidate order; diverged candidates excluded."""
+    from layer_fusion.training import TrainingDivergedError
+
+    usable = [i for i, c in enumerate(candidates) if not c.outcome.diverged]
+    if not usable:
+        lrs = [c.lr for c in candidates]
+        raise TrainingDivergedError(f"every lr candidate diverged: {lrs}")
+    best = min(
+        usable,
+        key=lambda i: (
+            candidates[i].outcome.best_tuning_error,
+            candidates[i].outcome.best_tuning_loss,
+            i,
+        ),
+    )
+    return candidates[best]
 
 
 def _training_rows(
@@ -158,9 +225,12 @@ def run_experiment(
       small sample of it). The eval split is never used for LR choice or early stopping.
     - Without ``fixed_lr`` this is a selection run: every lr_candidate is trained with the same
       epochs / early stopping, the lowest tuning error wins (ties: lower tuning loss, then
-      candidate order), and that model is reported. With ``fixed_lr`` only that LR is trained.
-    - ``train_seconds`` covers only the reported model's training loop; the whole LR search is
-      ``lr_search_seconds``.
+      candidate order), and that model is reported. Early stopping uses the same order.
+      With ``fixed_lr`` only that LR is trained.
+    - ``train_seconds`` covers only the reported model's training steps; its per-epoch tuning
+      evaluation is ``tuning_eval_seconds`` and the whole LR search is ``lr_search_seconds``.
+    - A candidate whose loss turns non-finite is diverged and excluded (score ``inf``); if no
+      usable model is left, ``TrainingDivergedError`` is raised.
     - MNLI records carry matched and mismatched error rates.
     """
     # Fail before any training when the provider was built under a different setting (US 26).
@@ -172,7 +242,7 @@ def run_experiment(
         count_trainable_parameters,
         extract_layer_weights,
     )
-    from layer_fusion.training import RowView, evaluate, train_head
+    from layer_fusion.training import RowView, TrainingDivergedError, evaluate, train_head
 
     torch_device = _resolve_device(device)
     num_classes = DATASET_SPECS[config.dataset].num_classes
@@ -180,6 +250,7 @@ def run_experiment(
     eval_batch = provider.get_split("eval")
     _check_labels(train, num_classes, "train")
     _check_labels(eval_batch, num_classes, "eval")
+    _check_run_inputs(config, eval_batch)
 
     train_rows, tuning_rows, small_ids = _training_rows(train, config, num_classes)
     train_view = RowView(train.vectors, train.labels, train_rows)
@@ -188,8 +259,8 @@ def run_experiment(
     def make_head() -> Any:
         return build_fusion_head(config.fusion_method, num_classes, config.layer_subset)
 
-    def fit(lr: float) -> tuple[Any, Any]:
-        return train_head(
+    def fit(lr: float) -> _Candidate:
+        head, outcome = train_head(
             make_head,
             train_view,
             tuning_view,
@@ -200,28 +271,32 @@ def run_experiment(
             seed=config.seed,
             device=torch_device,
         )
+        return _Candidate(lr, head, outcome)
 
     lr_tuning_scores: dict[float, float] = {}
     lr_search_seconds: float | None = None
     if config.fixed_lr is None:
-        fits = [(lr, *fit(lr)) for lr in config.lr_candidates]
-        best = min(
-            range(len(fits)),
-            key=lambda i: (fits[i][2].best_tuning_error, fits[i][2].best_tuning_loss, i),
-        )
-        selected_lr, head, outcome = fits[best]
-        lr_tuning_scores = {lr: o.best_tuning_error for lr, _, o in fits}
-        lr_search_seconds = sum(o.seconds for _, _, o in fits)
+        candidates = [fit(lr) for lr in config.lr_candidates]
+        chosen = _select_candidate(candidates)
+        lr_tuning_scores = {
+            c.lr: math.inf if c.outcome.diverged else c.outcome.best_tuning_error
+            for c in candidates
+        }
+        lr_search_seconds = sum(c.outcome.seconds for c in candidates)
         lr_selection_seed = config.seed
     else:
-        selected_lr = config.fixed_lr
-        head, outcome = fit(selected_lr)
+        chosen = fit(config.fixed_lr)
+        if chosen.outcome.diverged:
+            raise TrainingDivergedError(f"training at fixed_lr={config.fixed_lr} diverged")
         lr_selection_seed = config.lr_selection_seed
+    selected_lr, head, outcome = chosen.lr, chosen.head, chosen.outcome
 
     eval_view = RowView(
         eval_batch.vectors, eval_batch.labels, np.arange(len(eval_batch.doc_ids), dtype=np.int64)
     )
-    _, eval_error, predicted = evaluate(head, eval_view, config.batch_size, torch_device)
+    eval_loss, eval_error, predicted = evaluate(head, eval_view, config.batch_size, torch_device)
+    if not math.isfinite(eval_loss):
+        raise ValueError("eval loss is not finite (non-finite eval vectors?)")
 
     token_lengths = eval_batch.token_lengths
     genres = eval_batch.genre_splits
@@ -263,7 +338,7 @@ def run_experiment(
         eval_error_rate=eval_error,
         predictions=predictions,
         trainable_params=count_trainable_parameters(head),
-        train_seconds=outcome.seconds,
+        train_seconds=outcome.train_seconds,
         learning_curve=outcome.learning_curve,
         eval_error_rate_matched=matched,
         eval_error_rate_mismatched=mismatched,
@@ -275,6 +350,7 @@ def run_experiment(
         truncated_doc_ratio=truncated_doc_ratio,
         lr_selection_seed=lr_selection_seed,
         lr_search_seconds=lr_search_seconds,
+        tuning_eval_seconds=outcome.tuning_eval_seconds,
     )
 
 

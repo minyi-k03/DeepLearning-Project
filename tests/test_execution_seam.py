@@ -246,8 +246,9 @@ def test_result_record_contains_required_telemetry_fields(
             build_fusion_head(fusion_method, num_classes=3)
         )
         assert record.train_seconds > 0
+        assert record.tuning_eval_seconds is not None and record.tuning_eval_seconds > 0
         assert record.lr_search_seconds is not None
-        assert record.lr_search_seconds >= record.train_seconds
+        assert record.lr_search_seconds >= record.train_seconds + record.tuning_eval_seconds
         assert record.lr_selection_seed == config.seed
         assert record.learning_curve
         assert set(record.learning_curve[0]) == {
