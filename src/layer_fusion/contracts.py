@@ -175,9 +175,12 @@ class ResultRecord:
     truncated_doc_ratio: float | None = None
     # Seed of the run that selected selected_lr (equals config.seed for a selection run).
     lr_selection_seed: int | None = None
-    # Wall time of training every LR candidate (selection runs only); train_seconds covers only
-    # the reported model's training loop (SPEC §결정 필요 사항, 학습 시간 측정 범위).
+    # Wall time of training and tuning-evaluating every LR candidate (selection runs only);
+    # train_seconds covers only the reported model's training steps (SPEC §결정 필요 사항,
+    # 학습 시간 측정 범위).
     lr_search_seconds: float | None = None
+    # Per-epoch tuning-split evaluation time of the reported model (kept out of train_seconds).
+    tuning_eval_seconds: float | None = None
 
 
 @dataclass

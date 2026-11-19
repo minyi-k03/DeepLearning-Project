@@ -66,6 +66,7 @@ SPEC_FIELDS: dict[str, tuple[type, set[str]]] = {
             "torch_compile",
             "lr_selection_seed",  # 학습률을 고른 시드 (T-06a)
             "lr_search_seconds",  # 학습률 탐색 시간 (T-06a)
+            "tuning_eval_seconds",  # 튜닝 평가 시간 (T-06a, PR #15 리뷰)
         },
     ),
     # 문서 ID별 예측·정답, F4 층 가중치
