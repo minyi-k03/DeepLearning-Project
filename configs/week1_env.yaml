@@ -20,7 +20,12 @@ runtime_lock:
   #   켬 0.0971초. 파인튜닝(재현 트랙·T-08f)의 학습 시간은 T-08a에서 실측 후 필요하면 팀이 재검토(11/30 이전).
   # 측정 명령: python scripts/check_runtime_lock.py --device cuda --attn sdpa flash_attention_2 \
   #         --compile off on --benchmark-steps 20
-  cache_dtype: null                # "float32" | "float16" (MNLI train ~28GB fp32 / ~14GB fp16)
+  cache_dtype: "float16"           # "float32" | "float16" (MNLI train ~28GB fp32 / ~14GB fp16)
+  # 팀 결정 2026-11-18 (PR #8 리뷰: "float16 저장, 최대 절댓값 실측 후 확정") → 실측으로 조건 충족 (T-04b PR 2).
+  # 실측: scripts/extract_cache.py --report-only → docs/measurements/float16_range_check.json (2026-11-19, CPU)
+  #   표본 MNLI·SST-2·IMDB(L128/L512/Lfull) + 가장 짧은 문서 300건(짧을수록 값이 큼): 최대 |값| 7,994
+  #   (층 21, 차원 251의 이상치) → float16 최대 65,504 대비 약 8.2배 여유. 반올림 상대 오차 ≤ 2.4e-4.
+  # 전체 생성(T-08b)도 배치마다 NaN·범위를 검사해 넘으면 그 캐시를 남기지 않음.
 
 imdb_length_check:
   observed_max_tokens: 3270        # ModernBERT 토크나이저로 측정한 IMDB 최대 토큰 길이 (train 3270 / test 2971, 특수 토큰 포함)
@@ -38,5 +43,5 @@ training_budget:
   early_stopping: null             # 모든 결합 방식 동일 조기 종료 기준
   batch_size: null
   finetune_lr_candidates: null     # 파인튜닝 조건 학습률 범위
-  include_special_tokens_in_pool: null
+  include_special_tokens_in_pool: true  # 토큰 평균에 [CLS]·[SEP] 포함. 팀 결정 2026-11-18 (PR #8 리뷰, 고용민 합의)
   extract_time_included_in_train_time: null

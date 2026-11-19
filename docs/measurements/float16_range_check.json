@@ -1,0 +1,173 @@
+{
+  "runs": {
+    "mnli": {
+      "date": "2026-11-19",
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "device": "cpu",
+      "dtype_extracted": "float32",
+      "limit_per_split": 2000,
+      "seed": 0,
+      "include_special_tokens_in_pool": true,
+      "splits": {
+        "train": {
+          "num_docs": 2000,
+          "max_abs_value": 4260.9321,
+          "float16_round_trip_max_error": 1.828613,
+          "max_input_length": 223,
+          "truncated_doc_ratio": 0.0,
+          "elapsed_seconds": 10.2,
+          "device": "cpu"
+        },
+        "eval": {
+          "num_docs": 2000,
+          "max_abs_value": 4357.5718,
+          "float16_round_trip_max_error": 1.958496,
+          "max_input_length": 218,
+          "truncated_doc_ratio": 0.0,
+          "elapsed_seconds": 9.4,
+          "device": "cpu"
+        }
+      }
+    },
+    "sst2": {
+      "date": "2026-11-19",
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "device": "cpu",
+      "dtype_extracted": "float32",
+      "limit_per_split": 1000,
+      "seed": 0,
+      "include_special_tokens_in_pool": true,
+      "splits": {
+        "train": {
+          "num_docs": 1000,
+          "max_abs_value": 7065.376,
+          "float16_round_trip_max_error": 2.0,
+          "max_input_length": 59,
+          "truncated_doc_ratio": 0.0,
+          "elapsed_seconds": 2.25,
+          "device": "cpu"
+        },
+        "eval": {
+          "num_docs": 872,
+          "max_abs_value": 6463.061,
+          "float16_round_trip_max_error": 1.942383,
+          "max_input_length": 62,
+          "truncated_doc_ratio": 0.0,
+          "elapsed_seconds": 2.96,
+          "device": "cpu"
+        }
+      }
+    },
+    "imdb/L128": {
+      "date": "2026-11-19",
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "device": "cpu",
+      "dtype_extracted": "float32",
+      "limit_per_split": 300,
+      "seed": 0,
+      "include_special_tokens_in_pool": true,
+      "splits": {
+        "train": {
+          "num_docs": 300,
+          "max_abs_value": 1641.9056,
+          "float16_round_trip_max_error": 0.499756,
+          "max_input_length": 128,
+          "truncated_doc_ratio": 0.8866666666666667,
+          "elapsed_seconds": 31.0,
+          "device": "cpu"
+        },
+        "eval": {
+          "num_docs": 300,
+          "max_abs_value": 2035.2522,
+          "float16_round_trip_max_error": 0.499512,
+          "max_input_length": 128,
+          "truncated_doc_ratio": 0.8933333333333333,
+          "elapsed_seconds": 7.17,
+          "device": "cpu"
+        }
+      }
+    },
+    "imdb/L512": {
+      "date": "2026-11-19",
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "device": "cpu",
+      "dtype_extracted": "float32",
+      "limit_per_split": 300,
+      "seed": 0,
+      "include_special_tokens_in_pool": true,
+      "splits": {
+        "train": {
+          "num_docs": 300,
+          "max_abs_value": 1641.9056,
+          "float16_round_trip_max_error": 0.499756,
+          "max_input_length": 512,
+          "truncated_doc_ratio": 0.15333333333333332,
+          "elapsed_seconds": 36.92,
+          "device": "cpu"
+        },
+        "eval": {
+          "num_docs": 300,
+          "max_abs_value": 2035.2522,
+          "float16_round_trip_max_error": 0.499023,
+          "max_input_length": 512,
+          "truncated_doc_ratio": 0.12,
+          "elapsed_seconds": 47.63,
+          "device": "cpu"
+        }
+      }
+    },
+    "imdb/Lfull": {
+      "date": "2026-11-19",
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "device": "cpu",
+      "dtype_extracted": "float32",
+      "limit_per_split": 300,
+      "seed": 0,
+      "include_special_tokens_in_pool": true,
+      "splits": {
+        "train": {
+          "num_docs": 300,
+          "max_abs_value": 1641.9056,
+          "float16_round_trip_max_error": 0.499756,
+          "max_input_length": 1408,
+          "truncated_doc_ratio": 0.0,
+          "elapsed_seconds": 79.76,
+          "device": "cpu"
+        },
+        "eval": {
+          "num_docs": 300,
+          "max_abs_value": 2035.2522,
+          "float16_round_trip_max_error": 0.499023,
+          "max_input_length": 1290,
+          "truncated_doc_ratio": 0.0,
+          "elapsed_seconds": 23.37,
+          "device": "cpu"
+        }
+      }
+    }
+  },
+  "worst_case_shortest_docs": {
+    "note": "Shorter inputs give larger means (one outlier dimension dominates), so the 300 shortest train docs bound the full datasets. float32 extraction, CPU, sdpa, special tokens pooled.",
+    "sst2_train_shortest_300": {
+      "min_input_length": 4,
+      "max_abs_value": 7993.5947,
+      "float16_round_trip_max_error": 1.99707,
+      "argmax_layer_index": 21,
+      "argmax_dim": 251
+    },
+    "mnli_train_shortest_300": {
+      "min_input_length": 6,
+      "max_abs_value": 6374.5654,
+      "float16_round_trip_max_error": 1.996582,
+      "argmax_layer_index": 21,
+      "argmax_dim": 251
+    }
+  },
+  "decision_basis": {
+    "float16_max": 65504,
+    "observed_max_abs_value": 7993.5947,
+    "headroom_ratio": 8.2,
+    "max_relative_round_trip_error": "<= 2^-12 (~2.44e-4) by float16 rounding; absolute <= 2.0 at |x| in [4096, 8192)",
+    "full_run_guard": "T-08b extraction checks every batch (check_finite, check_float16_range) and discards the split on failure"
+  }
+}
