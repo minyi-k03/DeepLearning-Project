@@ -6,7 +6,7 @@ Run after Week 1 transformers version / attention / compile lock (T-02, T-04).
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.extraction
+pytestmark = [pytest.mark.extraction, pytest.mark.usefixtures("windows_file_locks")]
 
 MODEL_NAME = "answerdotai/ModernBERT-base"
 
@@ -262,8 +262,18 @@ def test_float32_extraction_still_reports_float16_round_trip_error(modernbert) -
     """The float16 decision is made from a float32 measurement run, so report it there too."""
     result = _extract(modernbert, _docs("measure the value range."))
     assert result.metadata.dtype == "float32"
-    assert result.report["max_abs_value"] > 0
-    assert result.report["float16_round_trip_max_error"] is not None
+    assert result.report.max_abs_value > 0
+    assert result.report.float16_round_trip_max_error >= 0
+
+
+def test_report_locates_the_largest_value(modernbert) -> None:
+    """The float16 evidence names where max |value| sits (slot, dim), so it can be re-checked."""
+    result = _extract(modernbert, _docs("a", "a much longer second document for the batch."))
+    report = result.report
+    at_location = float(np.abs(result.vectors[:, report.max_abs_slot, report.max_abs_dim]).max())
+    assert at_location == pytest.approx(report.max_abs_value, abs=1e-3)
+    assert report.max_abs_value == pytest.approx(float(np.abs(result.vectors).max()), abs=1e-3)
+    assert report.min_input_length == min(result.tokenized.input_lengths)
 
 
 # --- PR #12 review: non-finite values, injected model, genre_splits -------------------------
@@ -320,3 +330,33 @@ def test_genre_splits_are_none_for_records_without_genres(modernbert) -> None:
     """SST-2/IMDB records carry no genre, so no all-null genre_splits.json gets written."""
     result = _extract(modernbert, _docs("first.", "second."))
     assert result.genre_splits is None
+
+
+def test_cache_build_writes_a_loadable_cache_with_view_ratios(modernbert, tmp_path) -> None:
+    """scripts/extract_cache.py path: begin_split -> extract into memmap -> finish_split."""
+    import transformers
+
+    from layer_fusion.cache_build import ExtractionEnv, build_cache
+    from layer_fusion.providers import CacheProvider
+
+    model, tokenizer = modernbert
+    env = ExtractionEnv(
+        model_name=MODEL_NAME,
+        transformers_version=transformers.__version__,
+        attn_implementation="sdpa",
+        torch_compile=False,
+        lfull_max_length_cap=4096,
+        include_special_tokens_in_pool=True,
+        cache_dtype="float16",
+    )
+    records = _docs("a much longer sentence " * 10, "short.", "mid sized text.")
+    reports = build_cache(
+        {"train": records}, env, tmp_path, dtype="float16", batch_size=2,
+        model=model, tokenizer=tokenizer,
+    )
+    assert reports["train"]["num_docs"] == 3
+    batch = CacheProvider(str(tmp_path)).get_split("train")
+    assert batch.vectors.dtype.name == "float16" and batch.vectors.shape == (3, 23, 768)
+    assert batch.doc_ids == ["d0", "d1", "d2"]
+    assert batch.view_ratios is not None and len(batch.view_ratios) == 3
+    assert batch.view_ratios[1] == 1.0  # short documents fit in one local window

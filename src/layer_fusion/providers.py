@@ -23,7 +23,32 @@ DOC_IDS_FILE = "doc_ids.json"
 LABELS_FILE = "labels.npy"
 TOKEN_LENGTHS_FILE = "token_lengths.npy"
 GENRE_SPLITS_FILE = "genre_splits.json"
+VIEW_RATIOS_FILE = "view_ratios.npy"   # local-layer view ratio per document (SPEC US 18)
+REPORT_FILE = "report.json"            # extraction audit (max |value|, float16 error, time)
 PARTIAL_SUFFIX = ".partial"  # a split being written; never read as a cache
+
+
+def check_split_lengths(
+    n_rows: int,
+    doc_ids: Sequence[Any],
+    labels: Sequence[Any],
+    where: str = "",
+    **optional: Sequence[Any] | None,
+) -> None:
+    """Raise unless doc_ids, labels and every given per-document list have ``n_rows`` entries.
+
+    Shared by the cache writer and :class:`CacheProvider`, so a split is checked by one rule
+    when it is written and when it is read. ``None`` optional lists are skipped.
+    """
+    prefix = f"{where}: " if where else ""
+    if len(doc_ids) != n_rows or len(labels) != n_rows:
+        raise ValueError(
+            f"{prefix}doc_ids ({len(doc_ids)}) and labels ({len(labels)}) must match "
+            f"{n_rows} rows"
+        )
+    for name, values in optional.items():
+        if values is not None and len(values) != n_rows:
+            raise ValueError(f"{prefix}{name} has {len(values)} entries, expected {n_rows}")
 
 
 class CacheConfigMismatchError(ValueError):
@@ -40,6 +65,7 @@ class LayerVectorBatch:
     metadata: CacheMetadata
     genre_splits: list[str | None] | None = None
     token_lengths: list[int] | None = None
+    view_ratios: list[float] | None = None
 
 
 class LayerVectorProvider(Protocol):
@@ -108,8 +134,8 @@ class CacheProvider:
 
     Vectors are memory-mapped (``np.load(..., mmap_mode="r")``) in their stored dtype, so a
     float16 MNLI cache (~14 GB) fits the 24 GB container limit. Consumers upcast each mini-batch
-    to float32 before computing. (Storing float16 was agreed on PR #8, docs/03-plan.md §8; it
-    becomes final when configs/week1_env.yaml ``cache_dtype`` is filled in T-04b PR 2.)
+    to float32 before computing. (Cache dtype float16: SPEC §결정 필요 사항 and
+    configs/week1_env.yaml ``cache_dtype``.)
     """
 
     def __init__(self, cache_dir: str) -> None:
@@ -160,13 +186,18 @@ class CacheProvider:
         genre_splits = None
         if (split_dir / GENRE_SPLITS_FILE).is_file():
             genre_splits = json.loads((split_dir / GENRE_SPLITS_FILE).read_text("utf-8"))
-        if not len(doc_ids) == len(labels) == vectors.shape[0]:
-            raise ValueError(f"{split_dir}: doc_ids, labels and vectors disagree in length")
-        for name, values in (("token_lengths", token_lengths), ("genre_splits", genre_splits)):
-            if values is not None and len(values) != len(doc_ids):
-                raise ValueError(
-                    f"{split_dir}: {name} has {len(values)} entries, expected {len(doc_ids)}"
-                )
+        view_ratios = None
+        if (split_dir / VIEW_RATIOS_FILE).is_file():
+            view_ratios = np.load(split_dir / VIEW_RATIOS_FILE).tolist()
+        check_split_lengths(
+            vectors.shape[0],
+            doc_ids,
+            labels,
+            where=str(split_dir),
+            token_lengths=token_lengths,
+            genre_splits=genre_splits,
+            view_ratios=view_ratios,
+        )
         return LayerVectorBatch(
             doc_ids=doc_ids,
             labels=labels,
@@ -174,6 +205,7 @@ class CacheProvider:
             metadata=self._metadata,
             genre_splits=genre_splits,
             token_lengths=token_lengths,
+            view_ratios=view_ratios,
         )
 
 

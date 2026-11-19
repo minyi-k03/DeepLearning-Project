@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass, field
+import time
+import warnings
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -12,9 +14,9 @@ import numpy as np
 
 from layer_fusion.contracts import CacheMetadata, DocumentRecord, InputSetting
 from layer_fusion.inputs import (
-    TRUNCATION_BUDGETS,
     TokenizedInputs,
     build_tokenized_inputs,
+    max_length_cap,
     truncation_rule_name,
 )
 from layer_fusion.layers import HIDDEN_SIZE, NUM_LAYER_VECTORS
@@ -24,11 +26,14 @@ from layer_fusion.providers import (
     GENRE_SPLITS_FILE,
     LABELS_FILE,
     PARTIAL_SUFFIX,
+    REPORT_FILE,
     TOKEN_LENGTHS_FILE,
     VECTORS_FILE,
+    VIEW_RATIOS_FILE,
     CacheConfigMismatchError,
     cache_metadata_from_dict,
     cache_metadata_to_dict,
+    check_split_lengths,
 )
 
 FLOAT16_MAX = float(np.finfo(np.float16).max)  # 65,504
@@ -45,8 +50,8 @@ def masked_token_mean(hidden: Any, attention_mask: Any) -> Any:
     """Mean over tokens where ``attention_mask`` is 1: [B, T, H] x [B, T] -> [B, H].
 
     Padding positions are excluded (SPEC US 23). Whether special tokens are pooled is decided
-    by the caller through the mask (``include_special_tokens_in_pool``: agreed as true on PR #8,
-    docs/03-plan.md §8; becomes final when configs/week1_env.yaml is filled in T-04b PR 2).
+    by the caller through the mask (``include_special_tokens_in_pool``: true, SPEC
+    §결정 필요 사항 and configs/week1_env.yaml).
     """
     mask = attention_mask.to(hidden.dtype).unsqueeze(-1)
     summed = (hidden * mask).sum(dim=1)
@@ -168,15 +173,51 @@ def check_float16_range(max_abs: float) -> None:
         )
 
 
-def _max_length_cap(
-    input_setting: InputSetting | None, lfull_max_length_cap: int | None
-) -> int | None:
-    """Fixed per-setting length recorded in CacheMetadata (never data-dependent)."""
-    if input_setting in TRUNCATION_BUDGETS:
-        return TRUNCATION_BUDGETS[input_setting][2]
-    if input_setting is InputSetting.LFULL:
-        return lfull_max_length_cap
-    return None
+def make_cache_metadata(
+    model_name: str,
+    transformers_version: str,
+    attn_implementation: str,
+    torch_compile: bool,
+    input_setting: InputSetting | None,
+    lfull_max_length_cap: int | None,
+    include_special_tokens_in_pool: bool,
+    dtype: str,
+) -> CacheMetadata:
+    """CacheMetadata for one extraction setting, known before any document is processed.
+
+    The cache CLI needs it up front to open the on-disk split (``begin_split``) that
+    ``extract_layer_vectors`` then fills; the extractor builds the same value.
+    """
+    return CacheMetadata(
+        model_name=model_name,
+        transformers_version=transformers_version,
+        attn_implementation=attn_implementation,
+        torch_compile=torch_compile,
+        input_setting=input_setting,
+        max_length_cap=max_length_cap(input_setting, lfull_max_length_cap),
+        truncation_rule=truncation_rule_name(input_setting),
+        include_special_tokens_in_pool=include_special_tokens_in_pool,
+        dtype=dtype,
+    )
+
+
+@dataclass(frozen=True)
+class ExtractionReport:
+    """Audit numbers of one extraction run, saved as ``<split>/report.json``."""
+
+    num_docs: int
+    max_abs_value: float                 # decides whether float16 storage is safe
+    max_abs_slot: int                    # where max_abs_value sits: slot (0 = embedding) ...
+    max_abs_dim: int                     # ... and hidden dimension (outlier tracking)
+    float16_round_trip_max_error: float  # measured on float32 runs too
+    min_input_length: int                # short inputs give the largest means
+    max_input_length: int
+    truncated_doc_ratio: float
+    elapsed_seconds: float               # extraction time (whether it counts as training time: TBD)
+    device: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -188,8 +229,8 @@ class ExtractionResult:
     labels: list[int]
     genre_splits: list[str | None] | None    # None unless some record has a genre (MNLI)
     metadata: CacheMetadata
-    tokenized: TokenizedInputs
-    report: dict[str, Any] = field(default_factory=dict)
+    tokenized: TokenizedInputs               # token_lengths / view_ratios are saved from here
+    report: ExtractionReport
 
 
 def extract_layer_vectors(
@@ -212,10 +253,10 @@ def extract_layer_vectors(
 
     Documents are batched longest-first to limit padding and written back in the original
     record order (US 27). Each of the 23 hidden states is pooled right away, so memory stays
-    O(batch x length x 768) even for Lfull. ``out`` may be a pre-allocated array such as an
-    ``np.lib.format.open_memmap`` so the MNLI train cache never has to fit in RAM. A float16
-    range error stops extraction mid-way, so a caller writing ``out`` to disk should write to a
-    temporary path and keep it only on success (the T-04b PR 2 CLI does this).
+    O(batch x length x 768) even for Lfull. ``out`` may be the memmap returned by
+    :func:`begin_split` so the MNLI train cache is written straight to disk and never has to fit
+    in RAM. A float16 range or NaN error stops extraction mid-way; the caller then discards the
+    split with :func:`abort_split` (scripts/extract_cache.py does this).
     ``include_special_tokens_in_pool`` must be given explicitly (configs/week1_env.yaml).
     """
     import torch
@@ -247,6 +288,7 @@ def extract_layer_vectors(
     model = model.to(device).eval()
     forward = torch.compile(model) if torch_compile else model
 
+    started = time.perf_counter()
     tokenized = build_tokenized_inputs(records, tokenizer, input_setting, lfull_max_length_cap)
     n_docs = len(records)
     if out is None:
@@ -258,6 +300,7 @@ def extract_layer_vectors(
     special_ids = torch.tensor([tokenizer.cls_token_id, tokenizer.sep_token_id], device=device)
     order = sorted(range(n_docs), key=lambda i: tokenized.input_lengths[i], reverse=True)
     max_abs = 0.0
+    max_abs_at = (0, 0)  # (slot, dim)
     max_fp16_error = 0.0
     with torch.no_grad():
         for start in range(0, n_docs, batch_size):
@@ -286,8 +329,11 @@ def extract_layer_vectors(
             ).cpu().numpy()  # [B, 23, 768] float32
 
             check_finite(pooled)
-            batch_max = float(np.abs(pooled).max())
-            max_abs = max(max_abs, batch_max)
+            abs_pooled = np.abs(pooled)
+            batch_max = float(abs_pooled.max())
+            if batch_max > max_abs:
+                _, slot, dim = np.unravel_index(int(abs_pooled.argmax()), abs_pooled.shape)
+                max_abs, max_abs_at = batch_max, (int(slot), int(dim))
             # Measured for float32 runs too: the float16 decision is made from such a run.
             with np.errstate(over="ignore"):
                 as_fp16 = pooled.astype(np.float16)
@@ -300,24 +346,28 @@ def extract_layer_vectors(
             else:
                 out[idx] = pooled
 
-    metadata = CacheMetadata(
-        model_name=model_name,
-        transformers_version=transformers_version,
-        attn_implementation=attn_implementation,
-        torch_compile=torch_compile,
-        input_setting=input_setting,
-        max_length_cap=_max_length_cap(input_setting, lfull_max_length_cap),
-        truncation_rule=truncation_rule_name(input_setting),
-        include_special_tokens_in_pool=include_special_tokens_in_pool,
-        dtype=dtype,
+    metadata = make_cache_metadata(
+        model_name,
+        transformers_version,
+        attn_implementation,
+        torch_compile,
+        input_setting,
+        lfull_max_length_cap,
+        include_special_tokens_in_pool,
+        dtype,
     )
-    report = {
-        "num_docs": n_docs,
-        "max_abs_value": round(max_abs, 4),
-        "float16_round_trip_max_error": round(max_fp16_error, 6),
-        "max_input_length": max(tokenized.input_lengths, default=0),
-        "truncated_doc_ratio": tokenized.truncated_doc_ratio,
-    }
+    report = ExtractionReport(
+        num_docs=n_docs,
+        max_abs_value=round(max_abs, 4),
+        max_abs_slot=max_abs_at[0],
+        max_abs_dim=max_abs_at[1],
+        float16_round_trip_max_error=round(max_fp16_error, 6),
+        min_input_length=min(tokenized.input_lengths, default=0),
+        max_input_length=max(tokenized.input_lengths, default=0),
+        truncated_doc_ratio=tokenized.truncated_doc_ratio,
+        elapsed_seconds=round(time.perf_counter() - started, 2),
+        device=str(device),
+    )
     genres = [r.genre_split for r in records]
     return ExtractionResult(
         vectors=out,
@@ -331,6 +381,210 @@ def extract_layer_vectors(
     )
 
 
+# --- Cache writer -------------------------------------------------------------------------
+# A split is written into <output_dir>/<split>.partial and renamed to <split> only when every
+# file is in place, so a failed or interrupted run never leaves something that looks like a
+# usable cache (AGENTS.md §7). Existing splits and stale .partial folders are never overwritten.
+
+
+def _split_dirs(output_dir: Path, split_name: str) -> tuple[Path, Path]:
+    return output_dir / split_name, output_dir / f"{split_name}{PARTIAL_SUFFIX}"
+
+
+def close_memmap(array: Any) -> None:
+    """Release the file mapping behind an ``np.memmap`` (no-op for other arrays).
+
+    Windows cannot rename or delete a folder while a file in it is still mapped, so the writer
+    closes its memmaps explicitly instead of waiting for garbage collection (PR #13 review).
+    The array must not be read or written afterwards: its memory is unmapped.
+    """
+    mm = getattr(array, "_mmap", None)
+    if mm is not None and not mm.closed:
+        mm.close()
+
+
+def _npy_rows(path: Path) -> int:
+    """Number of rows of a ``.npy`` file; the mapping used to read it is closed again."""
+    array = np.load(path, mmap_mode="r")
+    try:
+        return int(array.shape[0])
+    finally:
+        close_memmap(array)
+
+
+def begin_split(
+    output_dir: str | Path, split_name: str, n_docs: int, metadata: CacheMetadata
+) -> np.memmap:
+    """Open ``<split>.partial/vectors.npy`` as a writable [N, 23, 768] memmap in metadata.dtype.
+
+    Rejects a directory built under other metadata and any existing ``<split>`` or
+    ``<split>.partial``. Pass the result as ``out=`` to :func:`extract_layer_vectors`, then call
+    :func:`finish_split` on success or ``abort_split(..., out=memmap)`` on failure; both close
+    the memmap, so it must not be used afterwards.
+    """
+    output_dir = Path(output_dir)
+    meta_path = output_dir / CACHE_METADATA_FILE
+    if meta_path.is_file():
+        existing = cache_metadata_from_dict(json.loads(meta_path.read_text("utf-8")))
+        if existing != metadata:
+            raise CacheConfigMismatchError(
+                f"{output_dir} already holds a cache built with {existing}, not {metadata}"
+            )
+    split_dir, partial_dir = _split_dirs(output_dir, split_name)
+    for existing_dir in (split_dir, partial_dir):
+        if existing_dir.exists():
+            raise FileExistsError(
+                f"{existing_dir} already exists (complete or left by a failed run); "
+                "refusing to overwrite — inspect and remove it by hand if it is stale"
+            )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    partial_dir.mkdir()
+    try:
+        return np.lib.format.open_memmap(
+            partial_dir / VECTORS_FILE,
+            mode="w+",
+            dtype=np.dtype(metadata.dtype),
+            shape=(n_docs, NUM_LAYER_VECTORS, HIDDEN_SIZE),
+        )
+    except BaseException:
+        shutil.rmtree(partial_dir, ignore_errors=True)
+        raise
+
+
+def abort_split(output_dir: str | Path, split_name: str, out: Any = None) -> None:
+    """Remove the ``<split>.partial`` folder of a failed run (never a finished ``<split>``).
+
+    ``out`` is the memmap from :func:`begin_split`; it is closed first so the folder can be
+    deleted on Windows. Never raises (it runs while another error is propagating); if the
+    folder survives, a warning names it so the next run's ``FileExistsError`` is explained.
+    """
+    close_memmap(out)
+    _, partial_dir = _split_dirs(Path(output_dir), split_name)
+    shutil.rmtree(partial_dir, ignore_errors=True)
+    if partial_dir.exists():
+        warnings.warn(
+            f"could not remove {partial_dir} (a file in it may still be open); delete it by hand",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
+@dataclass(frozen=True)
+class SplitIndex:
+    """Per-document lists saved next to ``vectors.npy`` (row i belongs to ``doc_ids[i]``)."""
+
+    doc_ids: list[str]
+    labels: list[int]
+    token_lengths: list[int] | None = None
+    genre_splits: list[str | None] | None = None
+    view_ratios: list[float] | None = None
+
+    def check(self, n_rows: int) -> None:
+        check_split_lengths(
+            n_rows,
+            self.doc_ids,
+            self.labels,
+            token_lengths=self.token_lengths,
+            genre_splits=self.genre_splits,
+            view_ratios=self.view_ratios,
+        )
+
+
+def _finish(
+    output_dir: Path,
+    split_name: str,
+    metadata: CacheMetadata,
+    index: SplitIndex,
+    report: dict[str, Any] | None,
+) -> Path:
+    """Write the index files next to the filled vectors and publish ``<split>``."""
+    split_dir, partial_dir = _split_dirs(output_dir, split_name)
+    doc_ids, labels = index.doc_ids, index.labels
+    token_lengths, genre_splits, view_ratios = (
+        index.token_lengths, index.genre_splits, index.view_ratios
+    )
+    try:
+        index.check(_npy_rows(partial_dir / VECTORS_FILE))
+        (partial_dir / DOC_IDS_FILE).write_text(json.dumps(list(doc_ids)), encoding="utf-8")
+        np.save(partial_dir / LABELS_FILE, np.asarray(labels, dtype=np.int64))
+        if token_lengths is not None:
+            np.save(partial_dir / TOKEN_LENGTHS_FILE, np.asarray(token_lengths, dtype=np.int64))
+        if genre_splits is not None:
+            (partial_dir / GENRE_SPLITS_FILE).write_text(
+                json.dumps(list(genre_splits)), encoding="utf-8"
+            )
+        if view_ratios is not None:
+            np.save(partial_dir / VIEW_RATIOS_FILE, np.asarray(view_ratios, dtype=np.float64))
+        if report is not None:
+            (partial_dir / REPORT_FILE).write_text(
+                json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+    except BaseException:
+        abort_split(output_dir, split_name)  # only the folder begin_split created
+        raise
+    meta_path = output_dir / CACHE_METADATA_FILE
+    if not meta_path.is_file():
+        meta_path.write_text(
+            json.dumps(cache_metadata_to_dict(metadata), indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    partial_dir.rename(split_dir)
+    return split_dir
+
+
+def finish_split(output_dir: str | Path, split_name: str, result: ExtractionResult) -> Path:
+    """Publish a split whose vectors were extracted into :func:`begin_split`'s memmap.
+
+    Saves doc_ids, labels, token lengths, genres, view ratios (US 18) and the extraction
+    report from ``result``. If ``result.vectors`` is not that memmap (e.g. an in-memory
+    extraction), its values are copied into it first. Returns the split directory.
+
+    When ``result.vectors`` is the partial memmap it is flushed and **closed** (Windows cannot
+    rename a folder holding a mapped file), so do not use it afterwards; read the published
+    split with :class:`~layer_fusion.providers.CacheProvider` instead.
+    """
+    output_dir = Path(output_dir)
+    _, partial_dir = _split_dirs(output_dir, split_name)
+    if not (partial_dir / VECTORS_FILE).is_file():
+        raise FileNotFoundError(f"{partial_dir} missing: call begin_split before finish_split")
+    try:
+        _write_vectors(partial_dir, result.vectors, result.metadata)
+    except BaseException:
+        abort_split(output_dir, split_name, result.vectors)
+        raise
+    index = SplitIndex(
+        doc_ids=result.doc_ids,
+        labels=result.labels,
+        token_lengths=result.tokenized.token_lengths,
+        genre_splits=result.genre_splits,
+        view_ratios=result.tokenized.view_ratios,
+    )
+    return _finish(output_dir, split_name, result.metadata, index, result.report.to_dict())
+
+
+def _write_vectors(partial_dir: Path, vectors: np.ndarray, metadata: CacheMetadata) -> None:
+    """Flush and close ``vectors`` if it is the partial memmap, otherwise copy it into that file.
+
+    Every memmap of the partial file is closed on return, so the folder can be renamed.
+    """
+    path = partial_dir / VECTORS_FILE
+    filename = getattr(vectors, "filename", None)
+    if filename is not None and Path(filename).resolve() == path.resolve():
+        vectors.flush()
+        close_memmap(vectors)
+        return
+    target = np.load(path, mmap_mode="r+")
+    try:
+        if target.shape != vectors.shape or vectors.dtype != np.dtype(metadata.dtype):
+            raise ValueError(
+                f"vectors {vectors.dtype} {vectors.shape} do not fit {target.dtype} {target.shape}"
+            )
+        target[:] = vectors
+        target.flush()
+    finally:
+        close_memmap(target)
+
+
 def save_layer_cache(
     output_dir: str | Path,
     split_name: str,
@@ -340,13 +594,13 @@ def save_layer_cache(
     metadata: CacheMetadata,
     token_lengths: list[int] | None = None,
     genre_splits: list[str | None] | None = None,
+    view_ratios: list[float] | None = None,
 ) -> Path:
-    """Save one split of a layer-vector cache: ``<output_dir>/<split>/vectors.npy`` + index files.
+    """Save one in-memory split: ``<output_dir>/<split>/vectors.npy`` + index files.
 
-    ``<output_dir>/metadata.json`` holds the CacheMetadata shared by every split. A directory
-    built under other metadata is rejected, an existing split (or a ``.partial`` left by a failed
-    run) is never overwritten, and files appear under ``<split>`` only once all are written
-    (AGENTS.md §7). Returns the split directory.
+    ``<output_dir>/metadata.json`` holds the CacheMetadata shared by every split. Same
+    no-overwrite and all-or-nothing rules as :func:`begin_split` / :func:`finish_split`.
+    Returns the split directory.
     """
     output_dir = Path(output_dir)
     if vectors.ndim != 3 or vectors.shape[1:] != (NUM_LAYER_VECTORS, HIDDEN_SIZE):
@@ -356,49 +610,14 @@ def save_layer_cache(
     if vectors.dtype != np.dtype(metadata.dtype):
         raise ValueError(f"vectors dtype {vectors.dtype} != metadata dtype {metadata.dtype}")
     n = vectors.shape[0]
-    if len(doc_ids) != n or len(labels) != n:
-        raise ValueError(f"doc_ids ({len(doc_ids)}) and labels ({len(labels)}) must match {n} rows")
-    for name, values in (("token_lengths", token_lengths), ("genre_splits", genre_splits)):
-        if values is not None and len(values) != n:
-            raise ValueError(f"{name} has {len(values)} entries, expected {n}")
+    index = SplitIndex(doc_ids, labels, token_lengths, genre_splits, view_ratios)
+    index.check(n)  # before begin_split, so a bad call leaves nothing on disk
 
-    meta_path = output_dir / CACHE_METADATA_FILE
-    if meta_path.is_file():
-        existing = cache_metadata_from_dict(json.loads(meta_path.read_text("utf-8")))
-        if existing != metadata:
-            raise CacheConfigMismatchError(
-                f"{output_dir} already holds a cache built with {existing}, not {metadata}"
-            )
-    split_dir = output_dir / split_name
-    partial_dir = output_dir / f"{split_name}{PARTIAL_SUFFIX}"
-    for existing_dir in (split_dir, partial_dir):
-        if existing_dir.exists():
-            raise FileExistsError(
-                f"{existing_dir} already exists (complete or left by a failed run); "
-                "refusing to overwrite — inspect and remove it by hand if it is stale"
-            )
-
-    # Write everything into <split>.partial and rename only when all files are written, so a
-    # failed save never leaves something that looks like a usable cache (AGENTS.md §7).
-    output_dir.mkdir(parents=True, exist_ok=True)
-    partial_dir.mkdir()
+    close_memmap(begin_split(output_dir, split_name, n, metadata))  # _write_vectors reopens it
+    _, partial_dir = _split_dirs(output_dir, split_name)
     try:
-        np.save(partial_dir / VECTORS_FILE, np.asarray(vectors))
-        (partial_dir / DOC_IDS_FILE).write_text(json.dumps(list(doc_ids)), encoding="utf-8")
-        np.save(partial_dir / LABELS_FILE, np.asarray(labels, dtype=np.int64))
-        if token_lengths is not None:
-            np.save(partial_dir / TOKEN_LENGTHS_FILE, np.asarray(token_lengths, dtype=np.int64))
-        if genre_splits is not None:
-            (partial_dir / GENRE_SPLITS_FILE).write_text(
-                json.dumps(list(genre_splits)), encoding="utf-8"
-            )
+        _write_vectors(partial_dir, vectors, metadata)
     except BaseException:
-        shutil.rmtree(partial_dir, ignore_errors=True)  # only the folder this call created
+        abort_split(output_dir, split_name)
         raise
-    if not meta_path.is_file():
-        meta_path.write_text(
-            json.dumps(cache_metadata_to_dict(metadata), indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-    partial_dir.rename(split_dir)
-    return split_dir
+    return _finish(output_dir, split_name, metadata, index, None)
