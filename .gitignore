@@ -25,6 +25,7 @@ venv/
 # Large data, caches, checkpoints, and generated outputs
 data/cache/*
 !data/cache/.gitkeep
+data/cache_debug/
 results/runs/*
 !results/runs/.gitkeep
 results/reports/*

@@ -23,6 +23,8 @@ DOC_IDS_FILE = "doc_ids.json"
 LABELS_FILE = "labels.npy"
 TOKEN_LENGTHS_FILE = "token_lengths.npy"
 GENRE_SPLITS_FILE = "genre_splits.json"
+VIEW_RATIOS_FILE = "view_ratios.npy"   # local-layer view ratio per document (SPEC US 18)
+REPORT_FILE = "report.json"            # extraction audit (max |value|, float16 error, time)
 PARTIAL_SUFFIX = ".partial"  # a split being written; never read as a cache
 
 
@@ -40,6 +42,7 @@ class LayerVectorBatch:
     metadata: CacheMetadata
     genre_splits: list[str | None] | None = None
     token_lengths: list[int] | None = None
+    view_ratios: list[float] | None = None
 
 
 class LayerVectorProvider(Protocol):
@@ -160,9 +163,17 @@ class CacheProvider:
         genre_splits = None
         if (split_dir / GENRE_SPLITS_FILE).is_file():
             genre_splits = json.loads((split_dir / GENRE_SPLITS_FILE).read_text("utf-8"))
+        view_ratios = None
+        if (split_dir / VIEW_RATIOS_FILE).is_file():
+            view_ratios = np.load(split_dir / VIEW_RATIOS_FILE).tolist()
         if not len(doc_ids) == len(labels) == vectors.shape[0]:
             raise ValueError(f"{split_dir}: doc_ids, labels and vectors disagree in length")
-        for name, values in (("token_lengths", token_lengths), ("genre_splits", genre_splits)):
+        optional = (
+            ("token_lengths", token_lengths),
+            ("genre_splits", genre_splits),
+            ("view_ratios", view_ratios),
+        )
+        for name, values in optional:
             if values is not None and len(values) != len(doc_ids):
                 raise ValueError(
                     f"{split_dir}: {name} has {len(values)} entries, expected {len(doc_ids)}"
@@ -174,6 +185,7 @@ class CacheProvider:
             metadata=self._metadata,
             genre_splits=genre_splits,
             token_lengths=token_lengths,
+            view_ratios=view_ratios,
         )
 
 

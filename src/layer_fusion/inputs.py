@@ -44,6 +44,20 @@ def compute_view_ratio(token_length: int, window_half: int = LOCAL_WINDOW_HALF) 
     return total_visible / (token_length * token_length)
 
 
+def max_length_cap(
+    input_setting: InputSetting | None, lfull_max_length_cap: int | None
+) -> int | None:
+    """Fixed per-setting length recorded in CacheMetadata.max_length_cap (never data-dependent).
+
+    L128/L512 -> 128/512, Lfull -> the configured Lfull cap, MNLI/SST-2 (no setting) -> None.
+    """
+    if input_setting in TRUNCATION_BUDGETS:
+        return TRUNCATION_BUDGETS[input_setting][2]
+    if input_setting is InputSetting.LFULL:
+        return lfull_max_length_cap
+    return None
+
+
 def truncation_rule_name(input_setting: InputSetting | None) -> str:
     """Name recorded in CacheMetadata.truncation_rule for an input setting (T-04b uses this)."""
     if input_setting in TRUNCATION_BUDGETS:

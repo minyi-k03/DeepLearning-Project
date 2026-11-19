@@ -8,6 +8,7 @@ from layer_fusion.inputs import (
     assign_length_bucket,
     build_tokenized_inputs,
     compute_view_ratio,
+    max_length_cap,
     truncation_rule_name,
 )
 
@@ -161,3 +162,10 @@ def test_documents_are_tokenized_in_batches() -> None:
     ]
     build_tokenized_inputs(pairs, tokenizer)
     assert tokenizer.calls == 2  # one batch for text_a, one for text_b
+
+
+def test_max_length_cap_is_fixed_per_setting_not_by_data() -> None:
+    assert max_length_cap(InputSetting.L128, 4096) == 128
+    assert max_length_cap(InputSetting.L512, 4096) == 512
+    assert max_length_cap(InputSetting.LFULL, 4096) == 4096
+    assert max_length_cap(None, 4096) is None

@@ -123,9 +123,9 @@ def test_failed_save_leaves_no_split_behind(tmp_path, monkeypatch) -> None:
     real_save = np.save
     calls = {"n": 0}
 
-    def flaky_save(path, array):  # vectors.npy succeeds, labels.npy fails
+    def flaky_save(path, array):  # vectors.npy (memmap) is already written, labels.npy fails
         calls["n"] += 1
-        if calls["n"] == 2:
+        if calls["n"] == 1:
             raise OSError("disk full")
         real_save(path, array)
 
@@ -144,3 +144,50 @@ def test_make_synthetic_rejects_unknown_splits() -> None:
     ]
     with pytest.raises(ValueError, match="tuning"):
         FakeLayerVectorProvider.make_synthetic(doc_records=records)
+
+
+def test_view_ratios_and_report_round_trip_through_the_writer(tmp_path) -> None:
+    """US 18: per-document view ratios are stored next to the vectors and loaded back."""
+    import json
+
+    from layer_fusion.extraction import (
+        ExtractionReport,
+        ExtractionResult,
+        begin_split,
+        finish_split,
+    )
+    from layer_fusion.inputs import TokenizedInputs
+
+    out = begin_split(tmp_path, "eval", 2, _meta())
+    out[:] = _vectors(2)
+    tokenized = TokenizedInputs(
+        doc_ids=["a", "b"], input_ids=[[1], [2]], token_lengths=[100, 900],
+        input_lengths=[100, 512], length_buckets=None, truncated=[False, True],
+        truncated_doc_ratio=0.5, view_ratios=[1.0, 0.25],
+    )
+    report = ExtractionReport(2, 3.0, 0.001, 512, 0.5, 1.2, "cpu")
+    result = ExtractionResult(out, ["a", "b"], [0, 1], None, _meta(), tokenized, report)
+    split_dir = finish_split(tmp_path, "eval", result)
+
+    batch = CacheProvider(str(tmp_path)).get_split("eval")
+    assert batch.view_ratios == [1.0, 0.25] and batch.token_lengths == [100, 900]
+    assert np.array_equal(batch.vectors, _vectors(2))
+    assert json.loads((split_dir / "report.json").read_text("utf-8"))["max_abs_value"] == 3.0
+
+
+def test_aborted_split_leaves_nothing_and_can_be_retried(tmp_path) -> None:
+    from layer_fusion.extraction import abort_split, begin_split
+
+    begin_split(tmp_path, "train", 2, _meta())
+    abort_split(tmp_path, "train")
+    assert not any(p.name.startswith("train") for p in tmp_path.iterdir())
+    begin_split(tmp_path, "train", 2, _meta())  # a clean retry is allowed
+
+
+def test_stale_partial_split_blocks_a_new_run(tmp_path) -> None:
+    """A .partial left by a crashed run is not reused or overwritten silently (AGENTS.md §7)."""
+    from layer_fusion.extraction import begin_split
+
+    begin_split(tmp_path, "train", 2, _meta())
+    with pytest.raises(FileExistsError, match="partial"):
+        begin_split(tmp_path, "train", 2, _meta())
