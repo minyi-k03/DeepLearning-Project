@@ -135,10 +135,23 @@ class CacheProvider:
         check_provider_for_run(self.metadata, config)
 
     def get_split(self, split_name: str) -> LayerVectorBatch:
+        """Load one split, checking it against the cache metadata before handing it out.
+
+        Only the .npy headers are read for the shape/dtype checks; vectors stay memory-mapped.
+        """
         split_dir = self.cache_dir / split_name
-        if not (split_dir / VECTORS_FILE).is_file():
+        if split_name.endswith(PARTIAL_SUFFIX) or not (split_dir / VECTORS_FILE).is_file():
             raise KeyError(f"split {split_name!r} not in cache {self.cache_dir} ({self.splits})")
         vectors = np.load(split_dir / VECTORS_FILE, mmap_mode="r")
+        if vectors.ndim != 3 or vectors.shape[1:] != (NUM_LAYER_VECTORS, HIDDEN_SIZE):
+            raise ValueError(
+                f"{split_dir}: vectors must be [N, {NUM_LAYER_VECTORS}, {HIDDEN_SIZE}], "
+                f"got {vectors.shape}"
+            )
+        if vectors.dtype != np.dtype(self._metadata.dtype):
+            raise ValueError(
+                f"{split_dir}: vectors are {vectors.dtype}, metadata says {self._metadata.dtype}"
+            )
         doc_ids = json.loads((split_dir / DOC_IDS_FILE).read_text("utf-8"))
         labels = np.load(split_dir / LABELS_FILE)
         token_lengths = None
@@ -149,6 +162,11 @@ class CacheProvider:
             genre_splits = json.loads((split_dir / GENRE_SPLITS_FILE).read_text("utf-8"))
         if not len(doc_ids) == len(labels) == vectors.shape[0]:
             raise ValueError(f"{split_dir}: doc_ids, labels and vectors disagree in length")
+        for name, values in (("token_lengths", token_lengths), ("genre_splits", genre_splits)):
+            if values is not None and len(values) != len(doc_ids):
+                raise ValueError(
+                    f"{split_dir}: {name} has {len(values)} entries, expected {len(doc_ids)}"
+                )
         return LayerVectorBatch(
             doc_ids=doc_ids,
             labels=labels,

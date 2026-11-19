@@ -264,3 +264,59 @@ def test_float32_extraction_still_reports_float16_round_trip_error(modernbert) -
     assert result.metadata.dtype == "float32"
     assert result.report["max_abs_value"] > 0
     assert result.report["float16_round_trip_max_error"] is not None
+
+
+# --- PR #12 review: non-finite values, injected model, genre_splits -------------------------
+
+
+@pytest.mark.parametrize(
+    "max_abs", [float("nan"), float("inf"), 65505.0], ids=["nan", "inf", "over"]
+)
+def test_float16_range_check_rejects_nan_inf_and_overflow(max_abs: float) -> None:
+    from layer_fusion.extraction import check_float16_range
+
+    with pytest.raises(ValueError):
+        check_float16_range(max_abs)
+
+
+def test_float16_range_check_accepts_the_float16_maximum() -> None:
+    from layer_fusion.extraction import check_float16_range
+
+    check_float16_range(65504.0)
+
+
+def test_non_finite_layer_vectors_are_rejected() -> None:
+    from layer_fusion.extraction import check_finite
+
+    vectors = np.zeros((2, 23, 768), dtype=np.float32)
+    vectors[1, 5, 7] = np.nan
+    with pytest.raises(ValueError, match="1 non-finite"):
+        check_finite(vectors)
+
+
+def test_injected_model_with_other_attention_is_rejected() -> None:
+    """The cache would record attn_implementation='sdpa' for a model actually running eager."""
+    from types import SimpleNamespace
+
+    pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    from layer_fusion.extraction import extract_layer_vectors
+
+    eager_model = SimpleNamespace(config=SimpleNamespace(_attn_implementation="eager"))
+    with pytest.raises(ValueError, match="attn_implementation='eager'"):
+        extract_layer_vectors(
+            _docs("a."),
+            model_name=MODEL_NAME,
+            transformers_version=transformers.__version__,
+            attn_implementation="sdpa",
+            torch_compile=False,
+            include_special_tokens_in_pool=True,
+            model=eager_model,
+            tokenizer=object(),
+        )
+
+
+def test_genre_splits_are_none_for_records_without_genres(modernbert) -> None:
+    """SST-2/IMDB records carry no genre, so no all-null genre_splits.json gets written."""
+    result = _extract(modernbert, _docs("first.", "second."))
+    assert result.genre_splits is None

@@ -146,8 +146,21 @@ def verify_final_norm_contract(
     return bool(check_final_norm_contract(model_name, attn_implementation, device)["passed"])
 
 
+def check_finite(values: np.ndarray) -> None:
+    """Raise if layer vectors contain NaN or inf (checked per batch for float32 and float16).
+
+    Per batch because a running ``max(max_abs, nan)`` keeps the old value, so NaN would
+    otherwise vanish from the summary and a corrupt cache could be written.
+    """
+    if not np.isfinite(values).all():
+        bad = int(values.size - np.count_nonzero(np.isfinite(values)))
+        raise ValueError(f"layer vectors contain {bad} non-finite (NaN/inf) values")
+
+
 def check_float16_range(max_abs: float) -> None:
     """Raise if layer-vector values do not fit float16 (precision is reported, not judged)."""
+    if not np.isfinite(max_abs):
+        raise ValueError(f"max |value| is {max_abs}; NaN/inf cannot be stored in a cache")
     if max_abs > FLOAT16_MAX:
         raise ValueError(
             f"max |value| {max_abs:.1f} exceeds the float16 maximum {FLOAT16_MAX:.0f}; "
@@ -173,7 +186,7 @@ class ExtractionResult:
     vectors: np.ndarray                      # [N, 23, 768] in metadata.dtype
     doc_ids: list[str]
     labels: list[int]
-    genre_splits: list[str | None]
+    genre_splits: list[str | None] | None    # None unless some record has a genre (MNLI)
     metadata: CacheMetadata
     tokenized: TokenizedInputs
     report: dict[str, Any] = field(default_factory=dict)
@@ -223,6 +236,14 @@ def extract_layer_vectors(
         tokenizer = AutoTokenizer.from_pretrained(model_name)
     if model is None:
         model = AutoModel.from_pretrained(model_name, attn_implementation=attn_implementation)
+    else:
+        # An injected model must match what CacheMetadata will record (ADR 0005).
+        model_attn = getattr(getattr(model, "config", None), "_attn_implementation", None)
+        if model_attn is not None and model_attn != attn_implementation:
+            raise ValueError(
+                f"model uses attn_implementation={model_attn!r}, but {attn_implementation!r} "
+                "would be recorded in the cache metadata"
+            )
     model = model.to(device).eval()
     forward = torch.compile(model) if torch_compile else model
 
@@ -264,6 +285,7 @@ def extract_layer_vectors(
                 [masked_token_mean(h.float(), pool_mask) for h in hidden_states], dim=1
             ).cpu().numpy()  # [B, 23, 768] float32
 
+            check_finite(pooled)
             batch_max = float(np.abs(pooled).max())
             max_abs = max(max_abs, batch_max)
             # Measured for float32 runs too: the float16 decision is made from such a run.
@@ -296,11 +318,13 @@ def extract_layer_vectors(
         "max_input_length": max(tokenized.input_lengths, default=0),
         "truncated_doc_ratio": tokenized.truncated_doc_ratio,
     }
+    genres = [r.genre_split for r in records]
     return ExtractionResult(
         vectors=out,
         doc_ids=tokenized.doc_ids,
         labels=[r.label for r in records],
-        genre_splits=[r.genre_split for r in records],
+        # Same rule as FakeLayerVectorProvider: no genre_splits.json for SST-2/IMDB caches.
+        genre_splits=genres if any(g is not None for g in genres) else None,
         metadata=metadata,
         tokenized=tokenized,
         report=report,
