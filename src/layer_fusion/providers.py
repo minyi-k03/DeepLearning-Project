@@ -28,6 +28,29 @@ REPORT_FILE = "report.json"            # extraction audit (max |value|, float16 
 PARTIAL_SUFFIX = ".partial"  # a split being written; never read as a cache
 
 
+def check_split_lengths(
+    n_rows: int,
+    doc_ids: Sequence[Any],
+    labels: Sequence[Any],
+    where: str = "",
+    **optional: Sequence[Any] | None,
+) -> None:
+    """Raise unless doc_ids, labels and every given per-document list have ``n_rows`` entries.
+
+    Shared by the cache writer and :class:`CacheProvider`, so a split is checked by one rule
+    when it is written and when it is read. ``None`` optional lists are skipped.
+    """
+    prefix = f"{where}: " if where else ""
+    if len(doc_ids) != n_rows or len(labels) != n_rows:
+        raise ValueError(
+            f"{prefix}doc_ids ({len(doc_ids)}) and labels ({len(labels)}) must match "
+            f"{n_rows} rows"
+        )
+    for name, values in optional.items():
+        if values is not None and len(values) != n_rows:
+            raise ValueError(f"{prefix}{name} has {len(values)} entries, expected {n_rows}")
+
+
 class CacheConfigMismatchError(ValueError):
     """Raised when a provider's creation metadata does not match the RunConfig."""
 
@@ -166,18 +189,15 @@ class CacheProvider:
         view_ratios = None
         if (split_dir / VIEW_RATIOS_FILE).is_file():
             view_ratios = np.load(split_dir / VIEW_RATIOS_FILE).tolist()
-        if not len(doc_ids) == len(labels) == vectors.shape[0]:
-            raise ValueError(f"{split_dir}: doc_ids, labels and vectors disagree in length")
-        optional = (
-            ("token_lengths", token_lengths),
-            ("genre_splits", genre_splits),
-            ("view_ratios", view_ratios),
+        check_split_lengths(
+            vectors.shape[0],
+            doc_ids,
+            labels,
+            where=str(split_dir),
+            token_lengths=token_lengths,
+            genre_splits=genre_splits,
+            view_ratios=view_ratios,
         )
-        for name, values in optional:
-            if values is not None and len(values) != len(doc_ids):
-                raise ValueError(
-                    f"{split_dir}: {name} has {len(values)} entries, expected {len(doc_ids)}"
-                )
         return LayerVectorBatch(
             doc_ids=doc_ids,
             labels=labels,

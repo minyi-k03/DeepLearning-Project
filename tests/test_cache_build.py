@@ -8,10 +8,14 @@ import pytest
 from layer_fusion.cache_build import (
     ExtractionEnv,
     build_cache,
+    cache_name,
     check_input_setting,
+    check_output_dir,
+    default_output_dir,
     load_env_config,
     resolve_cache_dtype,
     sample_records,
+    select_shortest,
 )
 from layer_fusion.contracts import DatasetName, DocumentRecord, InputSetting
 
@@ -48,9 +52,52 @@ def test_undecided_cache_dtype_is_never_guessed() -> None:
         resolve_cache_dtype(_env(cache_dtype=None), override=None)
 
 
-def test_dtype_override_wins_over_the_config() -> None:
-    assert resolve_cache_dtype(_env(cache_dtype="float16"), override="float32") == "float32"
-    assert resolve_cache_dtype(_env(cache_dtype="float16"), override=None) == "float16"
+def test_main_cache_uses_the_locked_dtype_only() -> None:
+    """A main cache cannot drift from week1_env.yaml through --dtype (Spec review, PR #13)."""
+    locked = _env(cache_dtype="float16")
+    assert resolve_cache_dtype(locked, override=None) == "float16"
+    assert resolve_cache_dtype(locked, override="float16") == "float16"
+    with pytest.raises(ValueError, match="differs from the locked cache_dtype"):
+        resolve_cache_dtype(locked, override="float32")
+    with pytest.raises(ValueError, match="differs from the locked cache_dtype"):
+        resolve_cache_dtype(_env(cache_dtype=None), override="float16")
+
+
+def test_debug_sample_may_override_the_dtype() -> None:
+    assert resolve_cache_dtype(_env(cache_dtype="float16"), "float32", debug=True) == "float32"
+    assert resolve_cache_dtype(_env(cache_dtype=None), "float16", debug=True) == "float16"
+
+
+def test_cache_folder_names() -> None:
+    assert cache_name(DatasetName.MNLI, None) == "mnli"
+    assert cache_name(DatasetName.IMDB, InputSetting.L512, sep="/") == "imdb/L512"
+    assert default_output_dir(DatasetName.IMDB, InputSetting.L512, None) == Path(
+        "data/cache/imdb_L512"
+    )
+    assert default_output_dir(DatasetName.SST2, None, "limit50") == Path(
+        "data/cache_debug/sst2_limit50"
+    )
+
+
+def test_sampled_cache_cannot_be_written_into_the_main_cache_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AGENTS.md §4: a --limit/--shortest subset must never look like a main cache."""
+    monkeypatch.chdir(tmp_path)
+    check_output_dir(Path("data/cache_debug/sst2_limit50"), sampled=True)
+    check_output_dir(Path("data/cache/sst2"), sampled=False)
+    for bad in ("data/cache/sst2", "elsewhere/sst2", "data/cache_debug_x/sst2"):
+        with pytest.raises(ValueError, match="cache_debug"):
+            check_output_dir(Path(bad), sampled=True)
+
+
+def test_shortest_selection_keeps_original_order_and_breaks_ties_by_position() -> None:
+    records = _records(6)
+    lengths = [9, 3, 7, 3, 1, 8]
+    picked = select_shortest(records, lengths, 3)
+    assert [r.doc_id for r in picked] == ["d001", "d003", "d004"]
+    with pytest.raises(ValueError, match="lengths"):
+        select_shortest(records, lengths[:-1], 3)
 
 
 def test_unknown_cache_dtype_is_rejected() -> None:

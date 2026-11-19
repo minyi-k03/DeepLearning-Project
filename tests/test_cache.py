@@ -91,6 +91,21 @@ def test_shape_and_length_mismatches_are_rejected(tmp_path) -> None:
         save_layer_cache(tmp_path, "train", _vectors(2), ["a"], [0, 1], _meta())
     with pytest.raises(ValueError, match="dtype"):
         save_layer_cache(tmp_path, "train", _vectors(2, "float32"), ["a", "b"], [0, 1], _meta())
+    with pytest.raises(ValueError, match="view_ratios has 1 entries"):
+        save_layer_cache(
+            tmp_path, "train", _vectors(2), ["a", "b"], [0, 1], _meta(), view_ratios=[1.0]
+        )
+    assert not any(tmp_path.iterdir())  # length errors are caught before anything is written
+
+
+def test_a_split_with_mismatched_index_files_is_rejected_on_load(tmp_path) -> None:
+    """Writer and reader share one length rule (check_split_lengths)."""
+    split_dir = save_layer_cache(
+        tmp_path, "train", _vectors(2), ["a", "b"], [0, 1], _meta(), view_ratios=[1.0, 0.5]
+    )
+    np.save(split_dir / "view_ratios.npy", np.asarray([1.0]))
+    with pytest.raises(ValueError, match="view_ratios has 1 entries, expected 2"):
+        CacheProvider(str(tmp_path)).get_split("train")
 
 
 def test_unknown_split_and_missing_cache_raise(tmp_path) -> None:
@@ -165,7 +180,11 @@ def test_view_ratios_and_report_round_trip_through_the_writer(tmp_path) -> None:
         input_lengths=[100, 512], length_buckets=None, truncated=[False, True],
         truncated_doc_ratio=0.5, view_ratios=[1.0, 0.25],
     )
-    report = ExtractionReport(2, 3.0, 0.001, 512, 0.5, 1.2, "cpu")
+    report = ExtractionReport(
+        num_docs=2, max_abs_value=3.0, max_abs_slot=21, max_abs_dim=251,
+        float16_round_trip_max_error=0.001, min_input_length=100, max_input_length=512,
+        truncated_doc_ratio=0.5, elapsed_seconds=1.2, device="cpu",
+    )
     result = ExtractionResult(out, ["a", "b"], [0, 1], None, _meta(), tokenized, report)
     split_dir = finish_split(tmp_path, "eval", result)
 

@@ -32,6 +32,7 @@ from layer_fusion.providers import (
     CacheConfigMismatchError,
     cache_metadata_from_dict,
     cache_metadata_to_dict,
+    check_split_lengths,
 )
 
 FLOAT16_MAX = float(np.finfo(np.float16).max)  # 65,504
@@ -205,7 +206,10 @@ class ExtractionReport:
 
     num_docs: int
     max_abs_value: float                 # decides whether float16 storage is safe
+    max_abs_slot: int                    # where max_abs_value sits: slot (0 = embedding) ...
+    max_abs_dim: int                     # ... and hidden dimension (outlier tracking)
     float16_round_trip_max_error: float  # measured on float32 runs too
+    min_input_length: int                # short inputs give the largest means
     max_input_length: int
     truncated_doc_ratio: float
     elapsed_seconds: float               # extraction time (whether it counts as training time: TBD)
@@ -295,6 +299,7 @@ def extract_layer_vectors(
     special_ids = torch.tensor([tokenizer.cls_token_id, tokenizer.sep_token_id], device=device)
     order = sorted(range(n_docs), key=lambda i: tokenized.input_lengths[i], reverse=True)
     max_abs = 0.0
+    max_abs_at = (0, 0)  # (slot, dim)
     max_fp16_error = 0.0
     with torch.no_grad():
         for start in range(0, n_docs, batch_size):
@@ -323,8 +328,11 @@ def extract_layer_vectors(
             ).cpu().numpy()  # [B, 23, 768] float32
 
             check_finite(pooled)
-            batch_max = float(np.abs(pooled).max())
-            max_abs = max(max_abs, batch_max)
+            abs_pooled = np.abs(pooled)
+            batch_max = float(abs_pooled.max())
+            if batch_max > max_abs:
+                _, slot, dim = np.unravel_index(int(abs_pooled.argmax()), abs_pooled.shape)
+                max_abs, max_abs_at = batch_max, (int(slot), int(dim))
             # Measured for float32 runs too: the float16 decision is made from such a run.
             with np.errstate(over="ignore"):
                 as_fp16 = pooled.astype(np.float16)
@@ -350,7 +358,10 @@ def extract_layer_vectors(
     report = ExtractionReport(
         num_docs=n_docs,
         max_abs_value=round(max_abs, 4),
+        max_abs_slot=max_abs_at[0],
+        max_abs_dim=max_abs_at[1],
         float16_round_trip_max_error=round(max_fp16_error, 6),
+        min_input_length=min(tokenized.input_lengths, default=0),
         max_input_length=max(tokenized.input_lengths, default=0),
         truncated_doc_ratio=tokenized.truncated_doc_ratio,
         elapsed_seconds=round(time.perf_counter() - started, 2),
@@ -423,35 +434,45 @@ def abort_split(output_dir: str | Path, split_name: str) -> None:
     shutil.rmtree(partial_dir, ignore_errors=True)
 
 
+@dataclass(frozen=True)
+class SplitIndex:
+    """Per-document lists saved next to ``vectors.npy`` (row i belongs to ``doc_ids[i]``)."""
+
+    doc_ids: list[str]
+    labels: list[int]
+    token_lengths: list[int] | None = None
+    genre_splits: list[str | None] | None = None
+    view_ratios: list[float] | None = None
+
+    def check(self, n_rows: int) -> None:
+        check_split_lengths(
+            n_rows,
+            self.doc_ids,
+            self.labels,
+            token_lengths=self.token_lengths,
+            genre_splits=self.genre_splits,
+            view_ratios=self.view_ratios,
+        )
+
+
 def _finish(
     output_dir: Path,
     split_name: str,
     metadata: CacheMetadata,
-    doc_ids: list[str],
-    labels: list[int],
-    token_lengths: list[int] | None,
-    genre_splits: list[str | None] | None,
-    view_ratios: list[float] | None,
+    index: SplitIndex,
     report: dict[str, Any] | None,
 ) -> Path:
     """Write the index files next to the filled vectors and publish ``<split>``."""
     split_dir, partial_dir = _split_dirs(output_dir, split_name)
+    doc_ids, labels = index.doc_ids, index.labels
+    token_lengths, genre_splits, view_ratios = (
+        index.token_lengths, index.genre_splits, index.view_ratios
+    )
     try:
         vectors = np.load(partial_dir / VECTORS_FILE, mmap_mode="r")
         n = vectors.shape[0]
         del vectors
-        if len(doc_ids) != n or len(labels) != n:
-            raise ValueError(
-                f"doc_ids ({len(doc_ids)}) and labels ({len(labels)}) must match {n} rows"
-            )
-        optional = (
-            ("token_lengths", token_lengths),
-            ("genre_splits", genre_splits),
-            ("view_ratios", view_ratios),
-        )
-        for name, values in optional:
-            if values is not None and len(values) != n:
-                raise ValueError(f"{name} has {len(values)} entries, expected {n}")
+        index.check(n)
         (partial_dir / DOC_IDS_FILE).write_text(json.dumps(list(doc_ids)), encoding="utf-8")
         np.save(partial_dir / LABELS_FILE, np.asarray(labels, dtype=np.int64))
         if token_lengths is not None:
@@ -495,17 +516,14 @@ def finish_split(output_dir: str | Path, split_name: str, result: ExtractionResu
     except BaseException:
         abort_split(output_dir, split_name)
         raise
-    return _finish(
-        output_dir,
-        split_name,
-        result.metadata,
-        result.doc_ids,
-        result.labels,
-        result.tokenized.token_lengths,
-        result.genre_splits,
-        result.tokenized.view_ratios,
-        result.report.to_dict(),
+    index = SplitIndex(
+        doc_ids=result.doc_ids,
+        labels=result.labels,
+        token_lengths=result.tokenized.token_lengths,
+        genre_splits=result.genre_splits,
+        view_ratios=result.tokenized.view_ratios,
     )
+    return _finish(output_dir, split_name, result.metadata, index, result.report.to_dict())
 
 
 def _write_vectors(partial_dir: Path, vectors: np.ndarray, metadata: CacheMetadata) -> None:
@@ -550,16 +568,8 @@ def save_layer_cache(
     if vectors.dtype != np.dtype(metadata.dtype):
         raise ValueError(f"vectors dtype {vectors.dtype} != metadata dtype {metadata.dtype}")
     n = vectors.shape[0]
-    if len(doc_ids) != n or len(labels) != n:
-        raise ValueError(f"doc_ids ({len(doc_ids)}) and labels ({len(labels)}) must match {n} rows")
-    optional = (
-        ("token_lengths", token_lengths),
-        ("genre_splits", genre_splits),
-        ("view_ratios", view_ratios),
-    )
-    for name, values in optional:
-        if values is not None and len(values) != n:
-            raise ValueError(f"{name} has {len(values)} entries, expected {n}")
+    index = SplitIndex(doc_ids, labels, token_lengths, genre_splits, view_ratios)
+    index.check(n)  # before begin_split, so a bad call leaves nothing on disk
 
     begin_split(output_dir, split_name, n, metadata)
     _, partial_dir = _split_dirs(output_dir, split_name)
@@ -568,14 +578,4 @@ def save_layer_cache(
     except BaseException:
         abort_split(output_dir, split_name)
         raise
-    return _finish(
-        output_dir,
-        split_name,
-        metadata,
-        doc_ids,
-        labels,
-        token_lengths,
-        genre_splits,
-        view_ratios,
-        None,
-    )
+    return _finish(output_dir, split_name, metadata, index, None)

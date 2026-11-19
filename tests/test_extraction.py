@@ -266,6 +266,16 @@ def test_float32_extraction_still_reports_float16_round_trip_error(modernbert) -
     assert result.report.float16_round_trip_max_error >= 0
 
 
+def test_report_locates_the_largest_value(modernbert) -> None:
+    """The float16 evidence names where max |value| sits (slot, dim), so it can be re-checked."""
+    result = _extract(modernbert, _docs("a", "a much longer second document for the batch."))
+    report = result.report
+    at_location = float(np.abs(result.vectors[:, report.max_abs_slot, report.max_abs_dim]).max())
+    assert at_location == pytest.approx(report.max_abs_value, abs=1e-3)
+    assert report.max_abs_value == pytest.approx(float(np.abs(result.vectors).max()), abs=1e-3)
+    assert report.min_input_length == min(result.tokenized.input_lengths)
+
+
 # --- PR #12 review: non-finite values, injected model, genre_splits -------------------------
 
 

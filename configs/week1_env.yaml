@@ -23,8 +23,9 @@ runtime_lock:
   cache_dtype: "float16"           # "float32" | "float16" (MNLI train ~28GB fp32 / ~14GB fp16)
   # 팀 결정 2026-11-18 (PR #8 리뷰: "float16 저장, 최대 절댓값 실측 후 확정") → 실측으로 조건 충족 (T-04b PR 2).
   # 실측: scripts/extract_cache.py --report-only → docs/measurements/float16_range_check.json (2026-11-19, CPU)
-  #   표본 MNLI·SST-2·IMDB(L128/L512/Lfull) + 가장 짧은 문서 300건(짧을수록 값이 큼): 최대 |값| 7,994
-  #   (층 21, 차원 251의 이상치) → float16 최대 65,504 대비 약 8.2배 여유. 반올림 상대 오차 ≤ 2.4e-4.
+  #   표본 MNLI·SST-2·IMDB(L128/L512/Lfull) + 가장 짧은 입력(--shortest, 짧을수록 값이 큼): 최대 |값| 7,994
+  #   (SST-2, 층 21·차원 251의 이상치. MNLI 6,375 / IMDB 3,051) → float16 최대 65,504 대비 약 8.2배 여유.
+  #   반올림 상대 오차 ≤ 2^-11 ≈ 4.9e-4 (float16 가수부 10비트).
   # 전체 생성(T-08b)도 배치마다 NaN·범위를 검사해 넘으면 그 캐시를 남기지 않음.
 
 imdb_length_check:

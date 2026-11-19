@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from layer_fusion.contracts import DatasetName, DocumentRecord, InputSetting
+from layer_fusion.contracts import CacheMetadata, DatasetName, DocumentRecord, InputSetting
 from layer_fusion.extraction import (
     abort_split,
     begin_split,
@@ -23,6 +23,8 @@ from layer_fusion.extraction import (
 )
 
 CACHE_DTYPES = ("float32", "float16")
+MAIN_CACHE_ROOT = Path("data/cache")         # full caches used by main runs (T-08b)
+DEBUG_CACHE_ROOT = Path("data/cache_debug")  # --limit / --shortest samples, git-ignored
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,23 @@ class ExtractionEnv:
     lfull_max_length_cap: int | None
     include_special_tokens_in_pool: bool | None
     cache_dtype: str | None
+
+    def cache_metadata(self, input_setting: InputSetting | None, dtype: str) -> CacheMetadata:
+        """CacheMetadata of a cache built under this setting (pooling must be decided)."""
+        if self.include_special_tokens_in_pool is None:
+            raise ValueError(
+                "include_special_tokens_in_pool is null in week1_env.yaml (not decided yet)"
+            )
+        return make_cache_metadata(
+            self.model_name,
+            self.transformers_version,
+            self.attn_implementation,
+            self.torch_compile,
+            input_setting,
+            self.lfull_max_length_cap,
+            self.include_special_tokens_in_pool,
+            dtype,
+        )
 
 
 def load_env_config(path: str | Path) -> ExtractionEnv:
@@ -55,16 +74,58 @@ def load_env_config(path: str | Path) -> ExtractionEnv:
     )
 
 
-def resolve_cache_dtype(env: ExtractionEnv, override: str | None) -> str:
-    """The dtype to store: ``--dtype`` if given, else ``cache_dtype``; never a guessed default."""
+def resolve_cache_dtype(env: ExtractionEnv, override: str | None, debug: bool = False) -> str:
+    """The dtype to store; never a guessed default.
+
+    A main cache always uses the locked ``cache_dtype`` (``null`` stops the build, and a
+    different ``--dtype`` is refused). Only a debug sample (``debug=True``) may override it.
+    """
+    if not debug and override is not None and override != env.cache_dtype:
+        raise ValueError(
+            f"--dtype {override} differs from the locked cache_dtype {env.cache_dtype!r} in "
+            "week1_env.yaml; main caches use the locked value (override only with --limit)"
+        )
     dtype = override or env.cache_dtype
     if dtype is None:
         raise ValueError(
-            "cache_dtype is null in week1_env.yaml (not decided yet); pass --dtype explicitly"
+            "cache_dtype is null in week1_env.yaml (not decided yet); "
+            "a debug run (--limit) may pass --dtype explicitly"
         )
     if dtype not in CACHE_DTYPES:
         raise ValueError(f"cache dtype must be one of {CACHE_DTYPES}, got {dtype!r}")
     return dtype
+
+
+def cache_name(dataset: DatasetName, input_setting: InputSetting | None, sep: str = "_") -> str:
+    """``mnli`` / ``imdb_L512``: the cache folder name (``sep="/"`` gives the log label)."""
+    return dataset.value + (f"{sep}{input_setting.value}" if input_setting else "")
+
+
+def default_output_dir(
+    dataset: DatasetName, input_setting: InputSetting | None, sample_tag: str | None
+) -> Path:
+    """``data/cache/<name>`` for a full cache, ``data/cache_debug/<name>_<tag>`` for a sample."""
+    name = cache_name(dataset, input_setting)
+    if sample_tag is not None:
+        return DEBUG_CACHE_ROOT / f"{name}_{sample_tag}"
+    return MAIN_CACHE_ROOT / name
+
+
+def check_output_dir(output_dir: Path, sampled: bool) -> None:
+    """A sampled (debug) cache may only be written under data/cache_debug/ (AGENTS.md §4).
+
+    CacheMetadata does not record sampling, so a subset written into data/cache/ could later be
+    read as a full main cache; the folder is the only thing that keeps them apart.
+    """
+    if not sampled:
+        return
+    debug_root = DEBUG_CACHE_ROOT.resolve()
+    target = output_dir.resolve()
+    if target != debug_root and debug_root not in target.parents:
+        raise ValueError(
+            f"a sampled cache (--limit/--shortest) must be written under {DEBUG_CACHE_ROOT}/, "
+            f"not {output_dir}; main caches hold every document"
+        )
 
 
 def check_input_setting(dataset: DatasetName, input_setting: InputSetting | None) -> None:
@@ -88,6 +149,23 @@ def sample_records(
         raise ValueError(f"limit must be positive, got {limit}")
     rng = random.Random(f"extract-limit:{seed}")
     keep = sorted(rng.sample(range(len(records)), limit))
+    return [records[i] for i in keep]
+
+
+def select_shortest(
+    records: Sequence[DocumentRecord], input_lengths: Sequence[int], count: int
+) -> list[DocumentRecord]:
+    """The ``count`` records with the shortest model inputs, in their original order.
+
+    Used for the float16 worst case: a short input averages few tokens, so one outlier
+    dimension dominates its mean (docs/measurements/float16_range_check.json). Ties keep the
+    earlier record.
+    """
+    if len(input_lengths) != len(records):
+        raise ValueError(f"{len(input_lengths)} lengths for {len(records)} records")
+    if count < 1:
+        raise ValueError(f"count must be positive, got {count}")
+    keep = sorted(sorted(range(len(records)), key=lambda i: input_lengths[i])[:count])
     return [records[i] for i in keep]
 
 
@@ -135,20 +213,7 @@ def build_cache(
         if output_dir is None:
             result = extract_layer_vectors(records, **kwargs)
         else:
-            if env.include_special_tokens_in_pool is None:
-                raise ValueError(
-                    "include_special_tokens_in_pool is null in week1_env.yaml (not decided yet)"
-                )
-            metadata = make_cache_metadata(
-                env.model_name,
-                env.transformers_version,
-                env.attn_implementation,
-                env.torch_compile,
-                input_setting,
-                env.lfull_max_length_cap,
-                env.include_special_tokens_in_pool,
-                dtype,
-            )
+            metadata = env.cache_metadata(input_setting, dtype)
             out = begin_split(output_dir, split_name, len(records), metadata)
             try:
                 result = extract_layer_vectors(records, out=out, **kwargs)
