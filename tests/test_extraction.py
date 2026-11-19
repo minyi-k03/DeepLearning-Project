@@ -6,7 +6,7 @@ Run after Week 1 transformers version / attention / compile lock (T-02, T-04).
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.extraction
+pytestmark = [pytest.mark.extraction, pytest.mark.usefixtures("windows_file_locks")]
 
 MODEL_NAME = "answerdotai/ModernBERT-base"
 

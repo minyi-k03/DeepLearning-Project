@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -49,8 +50,8 @@ def masked_token_mean(hidden: Any, attention_mask: Any) -> Any:
     """Mean over tokens where ``attention_mask`` is 1: [B, T, H] x [B, T] -> [B, H].
 
     Padding positions are excluded (SPEC US 23). Whether special tokens are pooled is decided
-    by the caller through the mask (``include_special_tokens_in_pool``: agreed as true on PR #8,
-    docs/03-plan.md §8; becomes final when configs/week1_env.yaml is filled in T-04b PR 2).
+    by the caller through the mask (``include_special_tokens_in_pool``: true, SPEC
+    §결정 필요 사항 and configs/week1_env.yaml).
     """
     mask = attention_mask.to(hidden.dtype).unsqueeze(-1)
     summed = (hidden * mask).sum(dim=1)
@@ -390,6 +391,27 @@ def _split_dirs(output_dir: Path, split_name: str) -> tuple[Path, Path]:
     return output_dir / split_name, output_dir / f"{split_name}{PARTIAL_SUFFIX}"
 
 
+def close_memmap(array: Any) -> None:
+    """Release the file mapping behind an ``np.memmap`` (no-op for other arrays).
+
+    Windows cannot rename or delete a folder while a file in it is still mapped, so the writer
+    closes its memmaps explicitly instead of waiting for garbage collection (PR #13 review).
+    The array must not be read or written afterwards: its memory is unmapped.
+    """
+    mm = getattr(array, "_mmap", None)
+    if mm is not None and not mm.closed:
+        mm.close()
+
+
+def _npy_rows(path: Path) -> int:
+    """Number of rows of a ``.npy`` file; the mapping used to read it is closed again."""
+    array = np.load(path, mmap_mode="r")
+    try:
+        return int(array.shape[0])
+    finally:
+        close_memmap(array)
+
+
 def begin_split(
     output_dir: str | Path, split_name: str, n_docs: int, metadata: CacheMetadata
 ) -> np.memmap:
@@ -397,7 +419,8 @@ def begin_split(
 
     Rejects a directory built under other metadata and any existing ``<split>`` or
     ``<split>.partial``. Pass the result as ``out=`` to :func:`extract_layer_vectors`, then call
-    :func:`finish_split` on success or :func:`abort_split` on failure.
+    :func:`finish_split` on success or ``abort_split(..., out=memmap)`` on failure; both close
+    the memmap, so it must not be used afterwards.
     """
     output_dir = Path(output_dir)
     meta_path = output_dir / CACHE_METADATA_FILE
@@ -428,10 +451,22 @@ def begin_split(
         raise
 
 
-def abort_split(output_dir: str | Path, split_name: str) -> None:
-    """Remove the ``<split>.partial`` folder of a failed run (never a finished ``<split>``)."""
+def abort_split(output_dir: str | Path, split_name: str, out: Any = None) -> None:
+    """Remove the ``<split>.partial`` folder of a failed run (never a finished ``<split>``).
+
+    ``out`` is the memmap from :func:`begin_split`; it is closed first so the folder can be
+    deleted on Windows. Never raises (it runs while another error is propagating); if the
+    folder survives, a warning names it so the next run's ``FileExistsError`` is explained.
+    """
+    close_memmap(out)
     _, partial_dir = _split_dirs(Path(output_dir), split_name)
     shutil.rmtree(partial_dir, ignore_errors=True)
+    if partial_dir.exists():
+        warnings.warn(
+            f"could not remove {partial_dir} (a file in it may still be open); delete it by hand",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 @dataclass(frozen=True)
@@ -469,10 +504,7 @@ def _finish(
         index.token_lengths, index.genre_splits, index.view_ratios
     )
     try:
-        vectors = np.load(partial_dir / VECTORS_FILE, mmap_mode="r")
-        n = vectors.shape[0]
-        del vectors
-        index.check(n)
+        index.check(_npy_rows(partial_dir / VECTORS_FILE))
         (partial_dir / DOC_IDS_FILE).write_text(json.dumps(list(doc_ids)), encoding="utf-8")
         np.save(partial_dir / LABELS_FILE, np.asarray(labels, dtype=np.int64))
         if token_lengths is not None:
@@ -488,7 +520,7 @@ def _finish(
                 json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
             )
     except BaseException:
-        shutil.rmtree(partial_dir, ignore_errors=True)  # only the folder begin_split created
+        abort_split(output_dir, split_name)  # only the folder begin_split created
         raise
     meta_path = output_dir / CACHE_METADATA_FILE
     if not meta_path.is_file():
@@ -506,6 +538,10 @@ def finish_split(output_dir: str | Path, split_name: str, result: ExtractionResu
     Saves doc_ids, labels, token lengths, genres, view ratios (US 18) and the extraction
     report from ``result``. If ``result.vectors`` is not that memmap (e.g. an in-memory
     extraction), its values are copied into it first. Returns the split directory.
+
+    When ``result.vectors`` is the partial memmap it is flushed and **closed** (Windows cannot
+    rename a folder holding a mapped file), so do not use it afterwards; read the published
+    split with :class:`~layer_fusion.providers.CacheProvider` instead.
     """
     output_dir = Path(output_dir)
     _, partial_dir = _split_dirs(output_dir, split_name)
@@ -514,7 +550,7 @@ def finish_split(output_dir: str | Path, split_name: str, result: ExtractionResu
     try:
         _write_vectors(partial_dir, result.vectors, result.metadata)
     except BaseException:
-        abort_split(output_dir, split_name)
+        abort_split(output_dir, split_name, result.vectors)
         raise
     index = SplitIndex(
         doc_ids=result.doc_ids,
@@ -527,20 +563,26 @@ def finish_split(output_dir: str | Path, split_name: str, result: ExtractionResu
 
 
 def _write_vectors(partial_dir: Path, vectors: np.ndarray, metadata: CacheMetadata) -> None:
-    """Flush ``vectors`` if it is the partial memmap, otherwise copy it into that file."""
+    """Flush and close ``vectors`` if it is the partial memmap, otherwise copy it into that file.
+
+    Every memmap of the partial file is closed on return, so the folder can be renamed.
+    """
     path = partial_dir / VECTORS_FILE
     filename = getattr(vectors, "filename", None)
     if filename is not None and Path(filename).resolve() == path.resolve():
         vectors.flush()
+        close_memmap(vectors)
         return
     target = np.load(path, mmap_mode="r+")
-    if target.shape != vectors.shape or vectors.dtype != np.dtype(metadata.dtype):
-        raise ValueError(
-            f"vectors {vectors.dtype} {vectors.shape} do not fit {target.dtype} {target.shape}"
-        )
-    target[:] = vectors
-    target.flush()
-    del target
+    try:
+        if target.shape != vectors.shape or vectors.dtype != np.dtype(metadata.dtype):
+            raise ValueError(
+                f"vectors {vectors.dtype} {vectors.shape} do not fit {target.dtype} {target.shape}"
+            )
+        target[:] = vectors
+        target.flush()
+    finally:
+        close_memmap(target)
 
 
 def save_layer_cache(
@@ -571,7 +613,7 @@ def save_layer_cache(
     index = SplitIndex(doc_ids, labels, token_lengths, genre_splits, view_ratios)
     index.check(n)  # before begin_split, so a bad call leaves nothing on disk
 
-    begin_split(output_dir, split_name, n, metadata)
+    close_memmap(begin_split(output_dir, split_name, n, metadata))  # _write_vectors reopens it
     _, partial_dir = _split_dirs(output_dir, split_name)
     try:
         _write_vectors(partial_dir, vectors, metadata)

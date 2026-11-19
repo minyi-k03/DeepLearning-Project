@@ -13,6 +13,9 @@ from layer_fusion.providers import (
     FakeLayerVectorProvider,
 )
 
+# PR #13 review: leaked memmap handles break rename/rmtree on Windows; emulate that here.
+pytestmark = pytest.mark.usefixtures("windows_file_locks")
+
 
 def _meta(**overrides: object) -> CacheMetadata:
     base = CacheMetadata(
@@ -210,3 +213,32 @@ def test_stale_partial_split_blocks_a_new_run(tmp_path) -> None:
     begin_split(tmp_path, "train", 2, _meta())
     with pytest.raises(FileExistsError, match="partial"):
         begin_split(tmp_path, "train", 2, _meta())
+
+
+def test_windows_lock_emulation_catches_an_open_memmap(tmp_path) -> None:
+    """Guard for the fixture itself: an open memmap must block rename, or the tests above
+    would pass on POSIX without proving anything about Windows."""
+    folder = tmp_path / "locked"
+    folder.mkdir()
+    held = np.lib.format.open_memmap(folder / "v.npy", mode="w+", dtype="float16", shape=(1,))
+    with pytest.raises(PermissionError, match="open memmaps"):
+        folder.rename(tmp_path / "moved")
+    from layer_fusion.extraction import close_memmap
+
+    close_memmap(held)
+    folder.rename(tmp_path / "moved")  # released handle: allowed again
+
+
+def test_abort_split_closes_the_memmap_and_warns_if_the_folder_survives(tmp_path) -> None:
+    from layer_fusion.extraction import abort_split, begin_split
+
+    out = begin_split(tmp_path, "train", 2, _meta())
+    abort_split(tmp_path, "train", out)  # passing the memmap lets it be removed
+    assert not (tmp_path / "train.partial").exists()
+
+    out = begin_split(tmp_path, "train", 2, _meta())
+    with pytest.warns(RuntimeWarning, match="could not remove"):
+        abort_split(tmp_path, "train")  # memmap still open elsewhere: folder stays, loudly
+    assert (tmp_path / "train.partial").exists()
+    abort_split(tmp_path, "train", out)
+    assert not (tmp_path / "train.partial").exists()

@@ -21,6 +21,9 @@ from layer_fusion.contracts import DatasetName, DocumentRecord, InputSetting
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+# PR #13 review: leaked memmap handles break rename/rmtree on Windows; emulate that here.
+pytestmark = pytest.mark.usefixtures("windows_file_locks")
+
 
 def _env(**overrides: object) -> ExtractionEnv:
     base = ExtractionEnv(

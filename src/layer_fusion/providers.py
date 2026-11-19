@@ -134,8 +134,8 @@ class CacheProvider:
 
     Vectors are memory-mapped (``np.load(..., mmap_mode="r")``) in their stored dtype, so a
     float16 MNLI cache (~14 GB) fits the 24 GB container limit. Consumers upcast each mini-batch
-    to float32 before computing. (Storing float16 was agreed on PR #8, docs/03-plan.md §8; it
-    becomes final when configs/week1_env.yaml ``cache_dtype`` is filled in T-04b PR 2.)
+    to float32 before computing. (Cache dtype float16: SPEC §결정 필요 사항 and
+    configs/week1_env.yaml ``cache_dtype``.)
     """
 
     def __init__(self, cache_dir: str) -> None:

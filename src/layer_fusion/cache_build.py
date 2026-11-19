@@ -219,7 +219,7 @@ def build_cache(
                 result = extract_layer_vectors(records, out=out, **kwargs)
                 finish_split(output_dir, split_name, result)
             except BaseException:
-                abort_split(output_dir, split_name)
+                abort_split(output_dir, split_name, out)  # closes the memmap first (Windows)
                 raise
         reports[split_name] = result.report.to_dict()
     return reports
