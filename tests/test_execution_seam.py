@@ -6,32 +6,37 @@ Un-skip each test as T-05 / T-06 are implemented (SPEC.md §Seam ①).
 
 import pytest
 
+from layer_fusion.contracts import FusionMethod
+
+# Trainable parameters at the real hidden size 768: SPEC literals (SPEC §결정 필요 사항:
+# F4 19,994 / 19,225; B0+ 20,075 / 19,277), not recomputed with the code's formula.
+EXPECTED_TRAINABLE_PARAMS = {  # num_classes -> {method: trainable parameters}
+    3: {  # MNLI
+        FusionMethod.B0: 2_307,
+        FusionMethod.F1: 2_307,
+        FusionMethod.F2: 2_330,
+        FusionMethod.F3: 9_219,
+        FusionMethod.F4: 19_994,
+        FusionMethod.B0_PLUS: 20_075,
+    },
+    2: {FusionMethod.F4: 19_225, FusionMethod.B0_PLUS: 19_277},  # 2-class (ADR 0008)
+}
+
 
 def test_trainable_parameter_counts_and_b0_plus_matched_to_f4() -> None:
     """Each fusion method matches definition and B0+ matches F4 parameter count.
 
-    Expected counts are the SPEC literals at the real hidden size 768 (SPEC §결정 필요 사항:
-    F4 19,994 / 19,225; B0+ 20,075 / 19,277), not recomputed with the code's formula.
+    ``test_identical_tuning_budget_across_fusion_methods`` checks the same MNLI counts on the
+    ``ResultRecord`` that ``run_experiment`` writes.
     """
     pytest.importorskip("torch")
-    from layer_fusion.contracts import FusionMethod
     from layer_fusion.fusion import (
         PARAM_MATCH_TOLERANCE,
         build_fusion_head,
         count_trainable_parameters,
     )
 
-    expected = {  # num_classes -> {method: trainable parameters}
-        3: {  # MNLI
-            FusionMethod.B0: 2_307,
-            FusionMethod.F1: 2_307,
-            FusionMethod.F2: 2_330,
-            FusionMethod.F3: 9_219,
-            FusionMethod.F4: 19_994,
-            FusionMethod.B0_PLUS: 20_075,
-        },
-        2: {FusionMethod.F4: 19_225, FusionMethod.B0_PLUS: 19_277},  # 2-class (ADR 0008)
-    }
+    expected = EXPECTED_TRAINABLE_PARAMS
     counts = {
         num_classes: {
             method: count_trainable_parameters(build_fusion_head(method, num_classes))
@@ -61,8 +66,8 @@ def test_per_layer_norm_makes_f1_invariant_to_single_layer_scaling() -> None:
 
 
 # The fusion-head tests below use only the public fusion API (build_fusion_head, forward,
-# count_trainable_parameters, extract_layer_weights). Revisit routing them through
-# run_experiment once T-06a implements the runner.
+# count_trainable_parameters, extract_layer_weights): they check head structure, which
+# run_experiment passes through unchanged. Runner-level checks start at the sampling test.
 
 
 def test_f2_has_no_global_scale_gamma() -> None:
@@ -152,17 +157,20 @@ def test_small_data_sampling_shared_within_seed_and_varies_across_seeds(
 def test_identical_tuning_budget_across_fusion_methods(
     noisy_provider, make_run_config
 ) -> None:  # type: ignore[no-untyped-def]
-    """All fusion methods share number of LR candidates, epochs, and early stopping criteria."""
+    """All fusion methods share number of LR candidates, epochs, and early stopping criteria.
+
+    The record also carries each head's trainable parameter count (MNLI, hidden 768).
+    """
     pytest.importorskip("torch")
-    from layer_fusion.contracts import FusionMethod
     from layer_fusion.runner import run_experiment
 
     provider = noisy_provider()
     base = make_run_config(provider)
-    for fusion_method in (FusionMethod.B0, FusionMethod.F1, FusionMethod.F2, FusionMethod.F3):
+    for fusion_method in FusionMethod:
         record = run_experiment(
             make_run_config(provider, fusion_method=fusion_method), provider, device="cpu"
         )
+        assert record.trainable_params == EXPECTED_TRAINABLE_PARAMS[3][fusion_method]
         # Every candidate was actually trained and scored on the tuning split.
         assert list(record.lr_tuning_scores) == list(base.lr_candidates)
         assert record.selected_lr in base.lr_candidates

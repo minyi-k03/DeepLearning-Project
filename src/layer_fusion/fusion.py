@@ -165,16 +165,19 @@ class F4Head(_FusionHead):
         nn.init.zeros_(self.gate.weight)
         nn.init.zeros_(self.gate.bias)
 
-    def document_layer_weights(self, selected: torch.Tensor) -> torch.Tensor:
-        """Per-document weights ``[batch, 23]`` from per-layer-normed vectors."""
+    def _document_layer_weights(self, selected: torch.Tensor) -> torch.Tensor:
+        """Per-document weights ``[batch, 23]``; ``selected`` must already be per-layer-normed."""
         return torch.softmax(self.gate(selected.mean(dim=1)), dim=-1)
 
     def combine(self, selected: torch.Tensor) -> torch.Tensor:
-        return torch.einsum("bl,blh->bh", self.document_layer_weights(selected), selected)
+        return torch.einsum("bl,blh->bh", self._document_layer_weights(selected), selected)
 
     def layer_weights_for(self, layer_vectors: torch.Tensor) -> torch.Tensor:
-        """Public path: raw ``[batch, 23, hidden]`` layer vectors -> per-document weights."""
-        return self.document_layer_weights(self._select_and_normalize(layer_vectors))
+        """Public path: raw ``[batch, 23, hidden]`` layer vectors -> per-document weights.
+
+        Normalizes first, so callers cannot skip per-layer LayerNorm by accident.
+        """
+        return self._document_layer_weights(self._select_and_normalize(layer_vectors))
 
 
 class B0PlusHead(_FusionHead):
