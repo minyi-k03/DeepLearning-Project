@@ -6,12 +6,13 @@ functions and their error paths on hand-crafted data (no GPU, no real dataset).
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
 
 from layer_fusion.contracts import PredictionRecord
-from layer_fusion.judgment import compute_paired_mcnemar, load_decision_rules
+from layer_fusion.judgment import compute_paired_mcnemar, load_decision_rules, seed_mean_std
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -58,11 +59,29 @@ def test_mcnemar_rejects_duplicate_doc_ids() -> None:
         compute_paired_mcnemar(a + [a[0]], b + [b[0]])
 
 
+def test_mcnemar_rejects_empty_predictions() -> None:
+    """No documents is a broken run, not 'no difference' (p = 1.0 would read as NO_EFFECT)."""
+    with pytest.raises(ValueError, match="at least one document"):
+        compute_paired_mcnemar([], [])
+
+
 def test_mcnemar_rejects_documents_with_different_labels() -> None:
     a, b = _pair_with_discordance(3, 1)
     b[0] = PredictionRecord(doc_id=b[0].doc_id, label=0, prediction=b[0].prediction)
     with pytest.raises(ValueError, match="different labels"):
         compute_paired_mcnemar(a, b)
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_seed_mean_std_rejects_non_finite_values(bad: float) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        seed_mean_std([0.10, bad, 0.12])
+
+
+def test_seed_mean_std_uses_sample_std() -> None:
+    mean, std = seed_mean_std([0.10, 0.12, 0.14])
+    assert mean == pytest.approx(0.12)
+    assert std == pytest.approx(0.02)  # ddof=1: sqrt((0.02**2 * 2) / 2)
 
 
 # --- load_decision_rules -------------------------------------------------------------------

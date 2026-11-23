@@ -5,8 +5,10 @@ References: docs/SPEC.md, ADR 0007.
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections.abc import Callable, Sequence
+from dataclasses import fields
 from typing import Any
 
 import yaml
@@ -23,6 +25,7 @@ from layer_fusion.contracts import (
     LayerSubset,
     PredictionRecord,
     ResultRecord,
+    RunConfig,
     RunKind,
     TrackKind,
     Verdict,
@@ -103,6 +106,9 @@ def compute_paired_mcnemar(
     """
     by_id_a = _index_by_doc_id(preds_a, "preds_a")
     by_id_b = _index_by_doc_id(preds_b, "preds_b")
+    if not by_id_a or not by_id_b:
+        # Without this, two empty runs would give p = 1.0 and read as NO_EFFECT.
+        raise ValueError("McNemar needs at least one document on each side")
     if by_id_a.keys() != by_id_b.keys():
         only_a = sorted(by_id_a.keys() - by_id_b.keys())[:3]
         only_b = sorted(by_id_b.keys() - by_id_a.keys())[:3]
@@ -213,6 +219,8 @@ def seed_mean_std(values: Sequence[float]) -> tuple[float, float]:
     """Mean and sample standard deviation (ddof=1) across seeds; needs at least 2 seeds."""
     if len(values) < 2:
         raise ValueError(f"seed std needs at least 2 seeds, got {len(values)}")
+    if not all(math.isfinite(v) for v in values):
+        raise ValueError(f"seed values must be finite, got {list(values)}")
     return statistics.fmean(values), statistics.stdev(values)
 
 
@@ -239,6 +247,30 @@ def _hypothesis_kinds(rules: DecisionRules) -> dict[str, str]:
             "rules.extra['hypotheses'] is missing; load the rules with load_decision_rules"
         )
     return {hypothesis_id: body["type"] for hypothesis_id, body in hypotheses.items()}
+
+
+# Inside one B0-vs-candidate comparison only these RunConfig fields may differ. Everything else
+# (input setting, epochs, early stopping, lr candidates, cache, ...) must match, because SPEC
+# module 7 trains every fusion method with the same epochs and early stopping, and averaging
+# records from different cells would silently judge a different experiment.
+_COMPARISON_FREE_FIELDS = frozenset({"seed", "fusion_method"})
+
+
+def _require_one_cell(hypothesis_id: str, records: Sequence[ResultRecord]) -> None:
+    reference = records[0]
+    for rec in records[1:]:
+        differing = [
+            f.name
+            for f in fields(RunConfig)
+            if f.name not in _COMPARISON_FREE_FIELDS
+            and getattr(rec.config, f.name) != getattr(reference.config, f.name)
+        ]
+        if differing:
+            raise ValueError(
+                f"{hypothesis_id}: records must come from one experiment cell (only "
+                f"{sorted(_COMPARISON_FREE_FIELDS)} may vary); {reference.run_id!r} and "
+                f"{rec.run_id!r} differ in {differing}"
+            )
 
 
 def _records_by_seed(records: Sequence[ResultRecord], label: str) -> dict[int, ResultRecord]:
@@ -278,6 +310,7 @@ def _judge_comparison(
             f"supported: {sorted(MCNEMAR_SEED_AGGREGATIONS)}"
         )
 
+    _require_one_cell(hypothesis_id, [*baseline, *candidate])
     base_by_seed = _records_by_seed(baseline, f"{hypothesis_id} baseline")
     cand_by_seed = _records_by_seed(candidate, f"{hypothesis_id} candidate")
     if base_by_seed.keys() != cand_by_seed.keys():

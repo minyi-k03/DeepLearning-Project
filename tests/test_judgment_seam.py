@@ -18,6 +18,7 @@ from layer_fusion.contracts import (
     DatasetName,
     DecisionRules,
     FusionMethod,
+    InputSetting,
     PredictionRecord,
     ResultRecord,
     RunConfig,
@@ -364,6 +365,28 @@ def test_two_records_for_one_seed_are_refused() -> None:
     records, _ = clear_improvement_records()
     with pytest.raises(ValueError, match="more than one record for seed"):
         judge_hypotheses(records + [records[0]], make_rules())
+
+
+@pytest.mark.parametrize(
+    ("config_change", "field"),
+    [
+        ({"input_setting": InputSetting.L128}, "input_setting"),
+        ({"epochs": 7}, "epochs"),
+        ({"lr_candidates": (1e-4,)}, "lr_candidates"),
+    ],
+)
+def test_records_from_different_experiment_cells_are_refused(
+    config_change: dict[str, object], field: str
+) -> None:
+    """Only seed and fusion method may vary inside one comparison (SPEC module 7: same epochs
+    and early stopping for every fusion method; input setting is IMDB-only). A stray record is
+    an error, not something to average in."""
+    records, _ = clear_improvement_records()
+    stray = records[-1]
+    records[-1] = replace(stray, config=replace(stray.config, **config_change))
+
+    with pytest.raises(ValueError, match=f"one experiment cell.*{field}"):
+        judge_hypotheses(records, make_rules())
 
 
 def test_h1_is_left_out_when_candidate_records_are_missing() -> None:
