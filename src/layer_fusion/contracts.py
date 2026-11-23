@@ -133,6 +133,10 @@ class RunConfig:
     run_kind: RunKind = RunKind.MAIN
     track: TrackKind = TrackKind.MAIN
     expected_cache_meta: CacheMetadata | None = None
+    # Learning rate chosen by the LR-selection run of the same setting (SPEC §결정 필요 사항:
+    # one selection per setting, other seeds reuse it). None -> this run searches lr_candidates.
+    fixed_lr: float | None = None
+    lr_selection_seed: int | None = None  # seed of the run that chose fixed_lr
 
 
 @dataclass(frozen=True)
@@ -169,6 +173,14 @@ class ResultRecord:
     attn_implementation: str = ""
     torch_compile: bool | None = None
     truncated_doc_ratio: float | None = None
+    # Seed of the run that selected selected_lr (equals config.seed for a selection run).
+    lr_selection_seed: int | None = None
+    # Wall time of training and tuning-evaluating every LR candidate (selection runs only);
+    # train_seconds covers only the reported model's training steps (SPEC §결정 필요 사항,
+    # 학습 시간 측정 범위).
+    lr_search_seconds: float | None = None
+    # Per-epoch tuning-split evaluation time of the reported model (kept out of train_seconds).
+    tuning_eval_seconds: float | None = None
 
 
 @dataclass

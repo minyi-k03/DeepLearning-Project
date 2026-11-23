@@ -16,7 +16,79 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from layer_fusion.contracts import CacheMetadata, InputSetting  # noqa: E402
+from layer_fusion.contracts import (  # noqa: E402
+    BackboneCondition,
+    CacheMetadata,
+    DataAmount,
+    DatasetName,
+    FusionMethod,
+    InputSetting,
+    RunConfig,
+)
+
+
+@pytest.fixture
+def noisy_provider():  # type: ignore[no-untyped-def]
+    """Factory for a fake provider whose classes overlap, so tuning errors differ across LRs.
+
+    ``FakeLayerVectorProvider.make_synthetic`` is separable at every LR (all tuning errors 0),
+    which would make LR-selection tests vacuous. Doc ids, labels and genres are kept from it.
+    """
+    from dataclasses import replace
+
+    from layer_fusion.layers import HIDDEN_SIZE, NUM_LAYER_VECTORS
+    from layer_fusion.providers import FakeLayerVectorProvider
+
+    def make(
+        num_classes: int = 3,
+        train_size: int = 300,
+        eval_size: int = 90,
+        signal: float = 0.06,
+        seed: int = 0,
+        metadata: CacheMetadata | None = None,
+        dtype: type = np.float32,
+    ) -> FakeLayerVectorProvider:
+        base = FakeLayerVectorProvider.make_synthetic(
+            num_classes=num_classes,
+            train_size=train_size,
+            eval_size=eval_size,
+            seed=seed,
+            metadata=metadata,
+        )
+        rng = np.random.default_rng(seed + 1)
+        class_direction = rng.normal(size=(num_classes, NUM_LAYER_VECTORS, HIDDEN_SIZE))
+        splits = {}
+        for name in ("train", "eval"):
+            batch = base.get_split(name)
+            noise = rng.normal(size=batch.vectors.shape)
+            vectors = (noise + signal * class_direction[batch.labels]).astype(dtype)
+            splits[name] = replace(batch, vectors=vectors)
+        return FakeLayerVectorProvider(splits, base.metadata)
+
+    return make
+
+
+@pytest.fixture
+def make_run_config():  # type: ignore[no-untyped-def]
+    """Factory for a main MNLI frozen RunConfig with a small, complete tuning budget."""
+
+    def make(provider, **overrides) -> RunConfig:  # type: ignore[no-untyped-def]
+        values = dict(
+            dataset=DatasetName.MNLI,
+            data_amount=DataAmount.FULL,
+            fusion_method=FusionMethod.F2,
+            backbone_condition=BackboneCondition.FROZEN,
+            seed=0,
+            lr_candidates=(1e-4, 1e-3, 1e-1),
+            epochs=5,
+            early_stopping_patience=2,
+            batch_size=32,
+            expected_cache_meta=provider.metadata,
+        )
+        values.update(overrides)
+        return RunConfig(**values)
+
+    return make
 
 
 @pytest.fixture
