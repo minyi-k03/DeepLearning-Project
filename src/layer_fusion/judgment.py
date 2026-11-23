@@ -252,8 +252,10 @@ def _hypothesis_kinds(rules: DecisionRules) -> dict[str, str]:
 # Inside one B0-vs-candidate comparison only these RunConfig fields may differ. Everything else
 # (input setting, epochs, early stopping, lr candidates, cache, ...) must match, because SPEC
 # module 7 trains every fusion method with the same epochs and early stopping, and averaging
-# records from different cells would silently judge a different experiment.
-_COMPARISON_FREE_FIELDS = frozenset({"seed", "fusion_method"})
+# records from different cells would silently judge a different experiment. fixed_lr and
+# lr_selection_seed differ by design: the first seed of each setting selects the LR and the
+# other seeds reuse it (SPEC §결정 필요 사항, T-06a), each fusion method with its own choice.
+_COMPARISON_FREE_FIELDS = frozenset({"seed", "fusion_method", "fixed_lr", "lr_selection_seed"})
 
 
 def _require_one_cell(hypothesis_id: str, records: Sequence[ResultRecord]) -> None:

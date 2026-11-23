@@ -389,6 +389,28 @@ def test_records_from_different_experiment_cells_are_refused(
         judge_hypotheses(records, make_rules())
 
 
+def test_lr_reuse_fields_may_differ_inside_one_cell() -> None:
+    """T-06a: the first seed of each setting selects the LR (fixed_lr=None) and the other seeds
+    reuse it (fixed_lr + lr_selection_seed), each fusion method with its own choice. Those
+    records belong to one cell and must still be judged."""
+    records, _ = clear_improvement_records()
+    chosen = {FusionMethod.B0: 1e-3, FusionMethod.F1: 3e-4}
+
+    def as_run(rec: ResultRecord) -> ResultRecord:
+        reuse = rec.config.seed != 0
+        config = replace(
+            rec.config,
+            lr_candidates=(1e-3, 3e-4, 1e-4),
+            fixed_lr=chosen[rec.config.fusion_method] if reuse else None,
+            lr_selection_seed=0 if reuse else None,
+        )
+        return replace(rec, config=config)
+
+    reused = [as_run(rec) for rec in records]
+
+    assert judge_hypotheses(reused, make_rules()).judgments["H1"].verdict == Verdict.SUPPORTED
+
+
 def test_h1_is_left_out_when_candidate_records_are_missing() -> None:
     """No F1 runs yet is 'not judged', not a NO_EFFECT verdict."""
     records, _ = clear_improvement_records()
