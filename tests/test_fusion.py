@@ -1,4 +1,4 @@
-"""Unit tests for per-layer norm and fusion heads B0/F1/F2/F3 (fusion.py, T-05a)."""
+"""Unit tests for per-layer norm and fusion heads B0/F1/F2/F3/F4/B0+ (fusion.py, T-05a/b)."""
 
 import pytest
 
@@ -9,6 +9,7 @@ from layer_fusion.fusion import (  # noqa: E402
     PerLayerNorm,
     build_fusion_head,
     count_trainable_parameters,
+    extract_document_layer_weights,
     extract_layer_weights,
 )
 from layer_fusion.layers import GLOBAL_LAYERS, LOCAL_LAYERS  # noqa: E402
@@ -44,6 +45,17 @@ def _set_f2_logits(head, seed: int = 1) -> None:
         head.layer_logits.copy_(_noise(head.layer_logits.numel(), seed=seed) * 2.0)
 
 
+def _rescale_per_layer(vectors: "torch.Tensor") -> "torch.Tensor":
+    """a*x+b with a different (a, b) per layer slot; scales 0.5 .. 1000.
+
+    Much smaller scales would push the variance toward LayerNorm's eps (1e-5), where exact
+    invariance no longer holds by design.
+    """
+    scales = torch.logspace(-0.3, 3, 23).view(1, 23, 1)
+    shifts = torch.linspace(-5.0, 5.0, 23).view(1, 23, 1)
+    return vectors * scales + shifts
+
+
 def _perturb(vectors: "torch.Tensor", slots, seed: int = 99) -> "torch.Tensor":
     changed = vectors.clone()
     for i, slot in enumerate(slots):
@@ -69,11 +81,7 @@ def test_every_head_is_invariant_to_per_layer_affine_rescaling(method: FusionMet
     if method == FusionMethod.F2:
         _set_f2_logits(head)
     vectors = _vectors()
-    # 0.5 .. 1000, a different scale per slot. Much smaller scales would push the variance
-    # toward LayerNorm's eps (1e-5), where exact invariance no longer holds by design.
-    scales = torch.logspace(-0.3, 3, 23).view(1, 23, 1)
-    shifts = torch.linspace(-5.0, 5.0, 23).view(1, 23, 1)
-    assert torch.allclose(head(vectors), head(vectors * scales + shifts), atol=1e-4)
+    assert torch.allclose(head(vectors), head(_rescale_per_layer(vectors)), atol=1e-4)
 
 
 # --- parameter counts and shapes -------------------------------------------------------
@@ -204,20 +212,161 @@ def test_heads_without_learned_layer_weights_return_none(method: FusionMethod) -
     assert extract_layer_weights(_head(method)) is None
 
 
+# --- F4 (per-document gating) ---------------------------------------------------------
+
+
+def _set_f4_gate(head, seed: int = 3) -> None:
+    """Give the (zero-initialized) gate non-trivial values so documents get distinct weights."""
+    with torch.no_grad():
+        head.gate.weight.copy_(_noise(*head.gate.weight.shape, seed=seed))
+        head.gate.bias.copy_(_noise(*head.gate.bias.shape, seed=seed + 1))
+
+
+def test_f4_parameter_count_is_gate_plus_classifier() -> None:
+    gate = HIDDEN * 23 + 23
+    classifier = HIDDEN * NUM_CLASSES + NUM_CLASSES
+    assert count_trainable_parameters(_head(FusionMethod.F4)) == gate + classifier
+
+
+def test_f4_starts_equal_to_f1() -> None:
+    f1, f4 = _head(FusionMethod.F1), _head(FusionMethod.F4)
+    vectors = _vectors()
+    assert torch.allclose(f1(vectors), f4(vectors), atol=1e-5)
+
+
+@pytest.mark.parametrize("batch", [1, 5])
+def test_f4_logits_shape(batch: int) -> None:
+    assert _head(FusionMethod.F4)(_vectors(batch=batch)).shape == (batch, NUM_CLASSES)
+
+
+def test_f4_document_weights_are_positive_sum_to_one_and_differ_per_document() -> None:
+    head = _head(FusionMethod.F4)
+    _set_f4_gate(head)
+    weights = torch.tensor(extract_document_layer_weights(head, _vectors()))
+    assert weights.shape == (BATCH, 23)
+    assert (weights > 0).all()
+    assert torch.allclose(weights.sum(dim=1), torch.ones(BATCH), atol=1e-6)
+    # Input-dependent gating: different documents get different layer weights.
+    assert (weights[0] - weights[1]).abs().max() > 1e-3
+
+
+def test_f4_forward_equals_hand_computed_per_document_weighted_sum() -> None:
+    head = _head(FusionMethod.F4)
+    _set_f4_gate(head)
+    vectors = _vectors()
+    weights = torch.tensor(extract_document_layer_weights(head, vectors))
+    normed = torch.nn.functional.layer_norm(vectors, (HIDDEN,))
+    expected = head.classifier(torch.einsum("bl,blh->bh", weights, normed))
+    assert torch.allclose(head(vectors), expected, atol=1e-5)
+    # ...and differs from F1 with the same classifier.
+    assert not torch.allclose(head(vectors), _head(FusionMethod.F1)(vectors), atol=1e-3)
+
+
+def test_f4_is_invariant_to_per_layer_affine_rescaling() -> None:
+    """US 28 for F4: the gate sees per-layer-normed vectors, so weights do not follow scale."""
+    head = _head(FusionMethod.F4)
+    _set_f4_gate(head)
+    vectors = _vectors()
+    rescaled = _rescale_per_layer(vectors)
+    assert torch.allclose(head(vectors), head(rescaled), atol=1e-4)
+    assert torch.allclose(
+        torch.tensor(extract_document_layer_weights(head, vectors)),
+        torch.tensor(extract_document_layer_weights(head, rescaled)),
+        atol=1e-5,
+    )
+
+
+def test_f4_gate_receives_nonzero_gradient() -> None:
+    head = _head(FusionMethod.F4)
+    head(_vectors()).pow(2).sum().backward()
+    assert head.gate.weight.grad is not None and head.gate.weight.grad.norm() > 0
+    assert head.gate.bias.grad is not None and head.gate.bias.grad.norm() > 0
+
+
+def test_f4_exposes_document_weights_but_no_dataset_level_weights() -> None:
+    head = _head(FusionMethod.F4)
+    assert extract_layer_weights(head) is None  # F2-style dataset-level weights only
+    assert len(extract_document_layer_weights(head, _vectors(batch=2))) == 2
+
+
+@pytest.mark.parametrize(
+    "method", [FusionMethod.B0, FusionMethod.F1, FusionMethod.F2, FusionMethod.F3]
+)
+def test_heads_without_gate_have_no_document_weights(method: FusionMethod) -> None:
+    assert extract_document_layer_weights(_head(method), _vectors()) is None
+
+
+# --- B0+ (parameter-matched control: last layer vector -> 2-layer MLP) ------------------
+
+B0_PLUS_HIDDEN_BY_CLASSES = {3: 26, 2: 25}  # ADR 0008 (MNLI 26 / 2 classes 25)
+
+
+@pytest.mark.parametrize(("num_classes", "mlp_hidden"), sorted(B0_PLUS_HIDDEN_BY_CLASSES.items()))
+def test_b0_plus_parameter_count_follows_adr_0008_hidden_size(
+    num_classes: int, mlp_hidden: int
+) -> None:
+    head = build_fusion_head(FusionMethod.B0_PLUS, num_classes, hidden_size=HIDDEN)
+    expected = (HIDDEN * mlp_hidden + mlp_hidden) + (mlp_hidden * num_classes + num_classes)
+    assert count_trainable_parameters(head) == expected
+
+
+@pytest.mark.parametrize("num_classes", [1, 4, 5])
+def test_b0_plus_hidden_size_is_undecided_for_other_class_counts(num_classes: int) -> None:
+    """SPEC leaves the AG News (4-class) hidden size TBD; do not invent one."""
+    with pytest.raises(ValueError, match="num_classes"):
+        build_fusion_head(FusionMethod.B0_PLUS, num_classes, hidden_size=HIDDEN)
+
+
+def test_b0_plus_reads_only_the_last_layer_vector() -> None:
+    head = _head(FusionMethod.B0_PLUS)
+    vectors = _vectors()
+    unused = [s for s in range(23) if s != 22]
+    assert torch.allclose(head(vectors), head(_perturb(vectors, unused)), atol=1e-5)
+    assert not torch.allclose(head(vectors), head(_perturb(vectors, [22])), atol=1e-3)
+
+
+def test_b0_plus_is_invariant_to_per_layer_affine_rescaling() -> None:
+    head = _head(FusionMethod.B0_PLUS)
+    vectors = _vectors()
+    assert torch.allclose(head(vectors), head(_rescale_per_layer(vectors)), atol=1e-4)
+
+
+def test_b0_plus_is_a_nonlinear_mlp_not_a_linear_classifier() -> None:
+    """Shape differs from B0 on purpose (ADR 0008): f(x) + f(-x) != 2 f(0) for a ReLU MLP."""
+    head = _head(FusionMethod.B0_PLUS)
+    vectors = _vectors()
+    mirrored = vectors.clone()
+    mirrored[:, 22] = -mirrored[:, 22]  # per-layer norm is odd-symmetric, so the MLP input flips
+    zeros = torch.zeros_like(vectors)  # normalized to 0 -> MLP input 0
+    midpoint = (head(vectors) + head(mirrored)) / 2
+    assert not torch.allclose(midpoint, head(zeros), atol=1e-3)
+
+
+def test_b0_plus_has_no_layer_weights() -> None:
+    head = _head(FusionMethod.B0_PLUS)
+    assert extract_layer_weights(head) is None
+    assert extract_document_layer_weights(head, _vectors()) is None
+
+
+def test_b0_plus_logits_shape_and_gradients() -> None:
+    head = _head(FusionMethod.B0_PLUS)
+    logits = head(_vectors(batch=5))
+    assert logits.shape == (5, NUM_CLASSES)
+    logits.pow(2).sum().backward()
+    assert all(p.grad is not None and p.grad.norm() > 0 for p in head.parameters())
+
+
 # --- argument validation ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize("method", [FusionMethod.B0, FusionMethod.F1, FusionMethod.F3])
+@pytest.mark.parametrize(
+    "method",
+    [FusionMethod.B0, FusionMethod.F1, FusionMethod.F3, FusionMethod.F4, FusionMethod.B0_PLUS],
+)
 @pytest.mark.parametrize("subset", [LayerSubset.GLOBAL_ONLY, LayerSubset.LOCAL_ONLY])
 def test_layer_subset_is_f2_only(method: FusionMethod, subset: LayerSubset) -> None:
     with pytest.raises(ValueError, match="F2"):
         _head(method, subset)
-
-
-@pytest.mark.parametrize("method", [FusionMethod.F4, FusionMethod.B0_PLUS])
-def test_f4_and_b0_plus_are_deferred_to_t05b(method: FusionMethod) -> None:
-    with pytest.raises(NotImplementedError, match="T-05b"):
-        _head(method)
 
 
 def test_wrong_input_shape_raises() -> None:

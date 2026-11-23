@@ -7,10 +7,44 @@ Un-skip each test as T-05 / T-06 are implemented (SPEC.md §Seam ①).
 import pytest
 
 
-@pytest.mark.skip(reason="TODO(T-05b): Enable after F4 and B0+ are implemented")
 def test_trainable_parameter_counts_and_b0_plus_matched_to_f4() -> None:
-    """Each fusion method matches definition and B0+ matches F4 parameter count."""
-    raise NotImplementedError
+    """Each fusion method matches definition and B0+ matches F4 parameter count.
+
+    Expected counts are the SPEC literals at the real hidden size 768 (SPEC §결정 필요 사항:
+    F4 19,994 / 19,225; B0+ 20,075 / 19,277), not recomputed with the code's formula.
+    """
+    pytest.importorskip("torch")
+    from layer_fusion.contracts import FusionMethod
+    from layer_fusion.fusion import (
+        PARAM_MATCH_TOLERANCE,
+        build_fusion_head,
+        count_trainable_parameters,
+    )
+
+    expected = {  # num_classes -> {method: trainable parameters}
+        3: {  # MNLI
+            FusionMethod.B0: 2_307,
+            FusionMethod.F1: 2_307,
+            FusionMethod.F2: 2_330,
+            FusionMethod.F3: 9_219,
+            FusionMethod.F4: 19_994,
+            FusionMethod.B0_PLUS: 20_075,
+        },
+        2: {FusionMethod.F4: 19_225, FusionMethod.B0_PLUS: 19_277},  # 2-class (ADR 0008)
+    }
+    counts = {
+        num_classes: {
+            method: count_trainable_parameters(build_fusion_head(method, num_classes))
+            for method in methods
+        }
+        for num_classes, methods in expected.items()
+    }
+    assert counts == expected
+
+    assert PARAM_MATCH_TOLERANCE == 0.01  # SPEC decision proposal: relative difference <= 1%
+    for num_classes, by_method in counts.items():
+        f4, b0_plus = by_method[FusionMethod.F4], by_method[FusionMethod.B0_PLUS]
+        assert abs(b0_plus - f4) / f4 <= PARAM_MATCH_TOLERANCE, num_classes
 
 
 def test_per_layer_norm_makes_f1_invariant_to_single_layer_scaling() -> None:
