@@ -75,31 +75,125 @@ def test_f2_global_and_local_subsets_exclude_embedding() -> None:
         assert torch.allclose(head(vectors), head(changed_embedding), atol=1e-5)
 
 
-@pytest.mark.skip(
-    reason="TODO(T-06a): Enable when run_experiment wires DataAmount.SMALL into ResultRecord "
-    "(data-level sampling is covered by tests/test_data.py)"
-)
-def test_small_data_sampling_shared_within_seed_and_varies_across_seeds() -> None:
+def test_small_data_sampling_shared_within_seed_and_varies_across_seeds(
+    monkeypatch, noisy_provider, make_run_config
+) -> None:  # type: ignore[no-untyped-def]
     """1,000 per class; same doc_ids per seed across fusion methods, distinct across seeds."""
-    raise NotImplementedError
+    pytest.importorskip("torch")
+    from collections import Counter
+
+    from layer_fusion import runner
+    from layer_fusion.contracts import DataAmount, DocumentRecord, FusionMethod
+    from layer_fusion.data import make_tuning_split
+
+    assert runner.SMALL_PER_CLASS == 1000  # the real setting; shrunk below to fit a CPU test
+    per_class = 5
+    monkeypatch.setattr(runner, "SMALL_PER_CLASS", per_class)
+    provider = noisy_provider()
+
+    def small_ids(fusion_method: FusionMethod, seed: int) -> list[str]:
+        config = make_run_config(
+            provider, data_amount=DataAmount.SMALL, fusion_method=fusion_method, seed=seed,
+            epochs=1,
+        )
+        ids = runner.run_experiment(config, provider, device="cpu").small_sample_doc_ids
+        assert ids is not None
+        return ids
+
+    seed0_b0 = small_ids(FusionMethod.B0, 0)
+    assert small_ids(FusionMethod.F2, 0) == seed0_b0
+    assert small_ids(FusionMethod.B0, 1) != seed0_b0
+
+    train = provider.get_split("train")
+    label_of = dict(zip(train.doc_ids, train.labels.tolist(), strict=True))
+    assert Counter(label_of[i] for i in seed0_b0) == {0: per_class, 1: per_class, 2: per_class}
+    # Drawn from the 90% outside the (fixed) tuning split, which stays shared with full runs.
+    records = [
+        DocumentRecord(doc_id=d, text_a="", label=label_of[d]) for d in train.doc_ids
+    ]
+    _, tuning = make_tuning_split(records, runner.TUNING_FRACTION, seed=runner.TUNING_SPLIT_SEED)
+    assert not set(seed0_b0) & {r.doc_id for r in tuning}
 
 
-@pytest.mark.skip(reason="TODO(T-06): Enable after runner is implemented")
-def test_identical_tuning_budget_across_fusion_methods() -> None:
+def test_identical_tuning_budget_across_fusion_methods(
+    noisy_provider, make_run_config
+) -> None:  # type: ignore[no-untyped-def]
     """All fusion methods share number of LR candidates, epochs, and early stopping criteria."""
-    raise NotImplementedError
+    pytest.importorskip("torch")
+    from layer_fusion.contracts import FusionMethod
+    from layer_fusion.runner import run_experiment
+
+    provider = noisy_provider()
+    base = make_run_config(provider)
+    for fusion_method in (FusionMethod.B0, FusionMethod.F1, FusionMethod.F2, FusionMethod.F3):
+        record = run_experiment(
+            make_run_config(provider, fusion_method=fusion_method), provider, device="cpu"
+        )
+        # Every candidate was actually trained and scored on the tuning split.
+        assert list(record.lr_tuning_scores) == list(base.lr_candidates)
+        assert record.selected_lr in base.lr_candidates
+        assert (record.config.epochs, record.config.early_stopping_patience) == (
+            base.epochs,
+            base.early_stopping_patience,
+        )
+        assert 1 <= len(record.learning_curve) <= base.epochs
 
 
-@pytest.mark.skip(reason="TODO(T-06): Enable after runner is implemented")
-def test_lr_selection_depends_only_on_tuning_split_not_eval_labels() -> None:
+def test_lr_selection_depends_only_on_tuning_split_not_eval_labels(
+    noisy_provider, make_run_config
+) -> None:  # type: ignore[no-untyped-def]
     """Changing eval split labels must not alter the selected learning rate."""
-    raise NotImplementedError
+    pytest.importorskip("torch")
+    from dataclasses import replace
+
+    import numpy as np
+
+    from layer_fusion.providers import FakeLayerVectorProvider
+    from layer_fusion.runner import run_experiment
+
+    provider = noisy_provider()
+    eval_batch = provider.get_split("eval")
+    flipped = replace(eval_batch, labels=(eval_batch.labels + 1) % 3)
+    relabeled = FakeLayerVectorProvider(
+        {"train": provider.get_split("train"), "eval": flipped}, provider.metadata
+    )
+    config = make_run_config(provider)
+    original = run_experiment(config, provider, device="cpu")
+    changed = run_experiment(config, relabeled, device="cpu")
+
+    # The candidates really differ on the tuning split, so the choice is not a trivial tie.
+    assert len(set(original.lr_tuning_scores.values())) > 1
+    assert changed.selected_lr == original.selected_lr
+    assert changed.lr_tuning_scores == original.lr_tuning_scores
+    # Same trained head, so only the eval error (computed against new labels) moves.
+    assert [p.prediction for p in changed.predictions] == [
+        p.prediction for p in original.predictions
+    ]
+    assert changed.eval_error_rate != original.eval_error_rate
+    assert np.isclose(
+        changed.eval_error_rate,
+        np.mean([p.prediction != p.label for p in changed.predictions]),
+    )
 
 
-@pytest.mark.skip(reason="TODO(T-06): Enable after MNLI eval reporting is implemented")
-def test_mnli_result_record_includes_matched_and_mismatched_error_rates() -> None:
+def test_mnli_result_record_includes_matched_and_mismatched_error_rates(
+    noisy_provider, make_run_config
+) -> None:  # type: ignore[no-untyped-def]
     """MNLI ResultRecord exposes both eval_error_rate_matched and eval_error_rate_mismatched."""
-    raise NotImplementedError
+    pytest.importorskip("torch")
+    import numpy as np
+
+    from layer_fusion.runner import run_experiment
+
+    provider = noisy_provider()
+    record = run_experiment(make_run_config(provider), provider, device="cpu")
+    for genre, rate in (
+        ("matched", record.eval_error_rate_matched),
+        ("mismatched", record.eval_error_rate_mismatched),
+    ):
+        rows = [p for p in record.predictions if p.genre_split == genre]
+        assert rows
+        assert rate == pytest.approx(np.mean([p.prediction != p.label for p in rows]))
 
 
 def test_mismatched_provider_metadata_raises_error() -> None:
@@ -130,7 +224,45 @@ def test_mismatched_provider_metadata_raises_error() -> None:
         run_experiment(config, provider)
 
 
-@pytest.mark.skip(reason="TODO(T-06): Enable after runner is implemented")
-def test_result_record_contains_required_telemetry_fields() -> None:
+def test_result_record_contains_required_telemetry_fields(
+    noisy_provider, make_run_config
+) -> None:  # type: ignore[no-untyped-def]
     """ResultRecord has trainable_params, train_seconds, learning_curve, predictions, run_kind."""
-    raise NotImplementedError
+    pytest.importorskip("torch")
+    from layer_fusion.contracts import FusionMethod, RunKind
+    from layer_fusion.fusion import build_fusion_head, count_trainable_parameters
+    from layer_fusion.runner import run_experiment
+
+    provider = noisy_provider()
+    for fusion_method, run_kind in (
+        (FusionMethod.F2, RunKind.MAIN),
+        (FusionMethod.B0, RunKind.DEBUG),
+    ):
+        config = make_run_config(provider, fusion_method=fusion_method, run_kind=run_kind)
+        record = run_experiment(config, provider, device="cpu")
+
+        assert record.config.run_kind == run_kind
+        assert record.trainable_params == count_trainable_parameters(
+            build_fusion_head(fusion_method, num_classes=3)
+        )
+        assert record.train_seconds > 0
+        assert record.tuning_eval_seconds is not None and record.tuning_eval_seconds > 0
+        assert record.lr_search_seconds is not None
+        assert record.lr_search_seconds >= record.train_seconds + record.tuning_eval_seconds
+        assert record.lr_selection_seed == config.seed
+        assert record.learning_curve
+        assert set(record.learning_curve[0]) == {
+            "epoch", "train_loss", "tuning_loss", "tuning_error",
+        }
+        eval_batch = provider.get_split("eval")
+        assert [p.doc_id for p in record.predictions] == eval_batch.doc_ids
+        assert [p.label for p in record.predictions] == eval_batch.labels.tolist()
+        assert (record.transformers_version, record.attn_implementation, record.torch_compile) == (
+            provider.metadata.transformers_version,
+            provider.metadata.attn_implementation,
+            provider.metadata.torch_compile,
+        )
+        if fusion_method == FusionMethod.F2:
+            assert record.layer_weights is not None and len(record.layer_weights) == 23
+        else:
+            assert record.layer_weights is None

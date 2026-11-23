@@ -41,6 +41,8 @@ SPEC_FIELDS: dict[str, tuple[type, set[str]]] = {
             "early_stopping_patience",
             "run_kind",
             "track",
+            "fixed_lr",  # 고정 학습률과 그 학습률을 고른 시드 (T-06a)
+            "lr_selection_seed",
         },
     ),
     # 결과 레코드 (실행 설정은 `config`로 포함)
@@ -62,6 +64,9 @@ SPEC_FIELDS: dict[str, tuple[type, set[str]]] = {
             "transformers_version",
             "attn_implementation",
             "torch_compile",
+            "lr_selection_seed",  # 학습률을 고른 시드 (T-06a)
+            "lr_search_seconds",  # 학습률 탐색 시간 (T-06a)
+            "tuning_eval_seconds",  # 튜닝 평가 시간 (T-06a, PR #15 리뷰)
         },
     ),
     # 문서 ID별 예측·정답, F4 층 가중치
