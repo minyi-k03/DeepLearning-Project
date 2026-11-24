@@ -38,12 +38,17 @@ BEST_FUSION_PLACEHOLDER = "BEST_FUSION"
 
 @dataclass(frozen=True)
 class TrainingBudget:
-    """Tuning budget shared by every fusion method (ADR 0007); ``None`` = TBD."""
+    """Tuning budget shared by every fusion method (ADR 0007); ``None`` = TBD.
+
+    ``finetune_lr_candidates`` replaces ``lr_candidates`` for the finetune condition (T-06d);
+    epochs, early stopping and batch size are shared by both conditions.
+    """
 
     lr_candidates: tuple[float, ...] | None = None
     epochs: int | None = None
     early_stopping_patience: int | None = None
     batch_size: int | None = None
+    finetune_lr_candidates: tuple[float, ...] | None = None
 
     def merged(self, overrides: TrainingBudget | None) -> TrainingBudget:
         """This budget with every non-``None`` field of ``overrides`` taking precedence."""
@@ -61,15 +66,24 @@ class TrainingBudget:
     def is_empty(self) -> bool:
         return all(getattr(self, f.name) is None for f in fields(TrainingBudget))
 
-    def missing(self) -> list[str]:
-        return [f.name for f in fields(TrainingBudget) if getattr(self, f.name) is None]
+    def _lr_field(self, backbone: BackboneCondition) -> str:
+        if backbone is BackboneCondition.FINETUNE:
+            return "finetune_lr_candidates"
+        return "lr_candidates"
 
-    def run_config_fields(self) -> dict[str, Any]:
-        """The RunConfig keyword arguments of this budget; refuses a TBD (``None``) field."""
-        if self.missing():
-            raise ValueError(f"tuning budget is TBD: {self.missing()}")
+    def missing(self, backbone: BackboneCondition = BackboneCondition.FROZEN) -> list[str]:
+        """TBD fields a run under ``backbone`` needs."""
+        names = [self._lr_field(backbone), "epochs", "early_stopping_patience", "batch_size"]
+        return [name for name in names if getattr(self, name) is None]
+
+    def run_config_fields(
+        self, backbone: BackboneCondition = BackboneCondition.FROZEN
+    ) -> dict[str, Any]:
+        """The RunConfig keyword arguments for ``backbone``; refuses a TBD (``None``) field."""
+        if self.missing(backbone):
+            raise ValueError(f"tuning budget is TBD: {self.missing(backbone)}")
         return {
-            "lr_candidates": self.lr_candidates,
+            "lr_candidates": getattr(self, self._lr_field(backbone)),
             "epochs": self.epochs,
             "early_stopping_patience": self.early_stopping_patience,
             "batch_size": self.batch_size,
@@ -99,6 +113,7 @@ def load_training_budget(env_path: str | Path) -> TrainingBudget:
     data = yaml.safe_load(Path(env_path).read_text(encoding="utf-8"))
     block = data.get("training_budget") or {}
     lr_candidates = block.get("lr_candidates")
+    finetune_lrs = block.get("finetune_lr_candidates")
     early_stopping = block.get("early_stopping")
     if early_stopping is not None and (
         isinstance(early_stopping, bool) or not isinstance(early_stopping, int)
@@ -111,6 +126,9 @@ def load_training_budget(env_path: str | Path) -> TrainingBudget:
         epochs=block.get("epochs"),
         early_stopping_patience=early_stopping,
         batch_size=block.get("batch_size"),
+        finetune_lr_candidates=(
+            None if finetune_lrs is None else tuple(float(x) for x in finetune_lrs)
+        ),
     )
 
 
@@ -181,7 +199,11 @@ def expand_experiment_matrix(
             raise ValueError(f"unknown experiment ids {unknown}; known: {sorted(by_id)}")
         experiments = [by_id[exp_id] for exp_id in experiment_ids]
 
-    problems =[f"training_budget.{name} is TBD" for name in budget.missing()]
+    problems: list[str] = []
+    for exp in experiments:
+        for name in budget.missing(BackboneCondition(exp["backbone_condition"])):
+            if (problem := f"training_budget.{name} is TBD") not in problems:
+                problems.append(problem)
     for exp in experiments:
         problems += _experiment_problems(exp, seeds if seeds is not None else exp.get("seeds"))
     if problems:
@@ -200,6 +222,9 @@ def expand_experiment_matrix(
         ]
         layer_subsets = [LayerSubset(v) for v in _as_list(exp, "layer_subsets", "layer_subset")]
         methods = [FusionMethod(m) for m in exp["fusion_methods"]]
+        backbone = BackboneCondition(exp["backbone_condition"])
+        # A finetune run computes float32 layer vectors live; there is no stored cache dtype.
+        meta_dtype = "float32" if backbone is BackboneCondition.FINETUNE else dtype
         for input_setting, subset, method, seed in itertools.product(
             input_settings, layer_subsets, methods, exp_seeds
         ):
@@ -208,13 +233,13 @@ def expand_experiment_matrix(
                     dataset=DatasetName(exp["dataset"]),
                     data_amount=DataAmount(exp["data_amount"]),
                     fusion_method=method,
-                    backbone_condition=BackboneCondition(exp["backbone_condition"]),
+                    backbone_condition=backbone,
                     seed=seed,
                     layer_subset=subset,
                     input_setting=input_setting,
-                    **budget.run_config_fields(),
+                    **budget.run_config_fields(backbone),
                     run_kind=run_kind,
-                    expected_cache_meta=env.cache_metadata(input_setting, dtype),
+                    expected_cache_meta=env.cache_metadata(input_setting, meta_dtype),
                 )
             )
     return configs

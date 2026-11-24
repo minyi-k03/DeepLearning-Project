@@ -42,6 +42,7 @@ DEBUG_ONLY = (
     "epochs",
     "early_stopping_patience",
     "batch_size",
+    "finetune_lr_candidates",
 )
 
 
@@ -75,6 +76,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     debug.add_argument("--epochs", type=int, default=None)
     debug.add_argument("--early-stopping-patience", type=int, default=None)
     debug.add_argument("--batch-size", type=int, default=None)
+    debug.add_argument("--finetune-lr-candidates", type=float, nargs="+", default=None)
     return parser.parse_args(argv)
 
 
@@ -93,6 +95,9 @@ def build_queue(args: argparse.Namespace) -> list[RunConfig]:
         epochs=args.epochs,
         early_stopping_patience=args.early_stopping_patience,
         batch_size=args.batch_size,
+        finetune_lr_candidates=(
+            None if args.finetune_lr_candidates is None else tuple(args.finetune_lr_candidates)
+        ),
     )
     configs = expand_experiment_matrix(
         args.matrix,
@@ -135,7 +140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         result = run_queue(
             configs,
-            cache_provider_factory(args.cache_dir),
+            cache_provider_factory(args.cache_dir, args.env_config),
             args.output_dir,
             run=run,
             run_id_of=make_run_id,
