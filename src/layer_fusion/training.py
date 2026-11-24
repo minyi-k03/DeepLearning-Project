@@ -196,7 +196,9 @@ def train_head(
             break
         if (tuning_error, tuning_loss) < (best_error, best_loss):
             best_error, best_loss, best_epoch = tuning_error, tuning_loss, epoch
-            best_state = {k: v.detach().clone() for k, v in head.state_dict().items()}
+            # Snapshot on the CPU: a finetune model is a whole ModernBERT, and a GPU copy
+            # would double its memory for the whole run.
+            best_state = {k: v.detach().to("cpu", copy=True) for k, v in head.state_dict().items()}
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1

@@ -314,7 +314,9 @@ def run_experiment(
             seed=config.seed,
             device=torch_device,
         )
-        return _Candidate(lr, head, outcome)
+        # Park the trained model on the CPU: with the finetune condition each candidate is a
+        # whole ModernBERT, and keeping all of them on the GPU would multiply its memory use.
+        return _Candidate(lr, head.to("cpu"), outcome)
 
     lr_tuning_scores: dict[float, float] = {}
     lr_search_seconds: float | None = None
@@ -332,7 +334,11 @@ def run_experiment(
         if chosen.outcome.diverged:
             raise TrainingDivergedError(f"training at fixed_lr={config.fixed_lr} diverged")
         lr_selection_seed = config.lr_selection_seed
-    selected_lr, head, outcome = chosen.lr, chosen.head, chosen.outcome
+    selected_lr, outcome = chosen.lr, chosen.outcome
+    head = chosen.head.to(torch_device)  # only the reported model goes back to the device
+    if config.fixed_lr is None:
+        for candidate in candidates:
+            candidate.head = None  # drop the other candidates' models
 
     eval_view = view(eval_batch, np.arange(len(eval_batch.doc_ids), dtype=np.int64))
     eval_loss, eval_error, predicted = evaluate(head, eval_view, config.batch_size, torch_device)
