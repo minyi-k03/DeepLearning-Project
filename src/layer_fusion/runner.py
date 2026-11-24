@@ -41,7 +41,10 @@ MNLI_GENRES = frozenset({"matched", "mismatched"})
 
 
 def make_run_id(config: RunConfig) -> str:
-    """Deterministic run id built from the setting (T-06b may add a timestamp to file names).
+    """Deterministic run id built from the setting; also the record file name (T-06b).
+
+    No timestamp is added: one setting + seed + run kind is one record file, so a finished
+    run is found by name and is never silently run twice (``records.save_result_record``).
 
     Reproduction-track ids start with ``repro-`` so they never collide with main-track ids.
     """
