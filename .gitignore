@@ -38,3 +38,6 @@ results/reproduction/*
 *.npy
 *.npz
 *.parquet
+
+# Run logs
+logs/
