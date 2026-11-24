@@ -20,8 +20,11 @@ Note:
   start at 0, so F4 starts as F1. Per-document weights are exposed by
   ``extract_document_layer_weights``; wiring them into result records is the runner's job.
 - B0+ (T-05b): last layer vector -> ReLU MLP, hidden size 26 (3 classes) / 25 (2 classes) from
-  ADR 0008, so its trainable parameter count matches F4's within ``PARAM_MATCH_TOLERANCE``.
-  F4's gate form and that tolerance are SPEC decision proposals pending teammate approval.
+  ADR 0008 (matched at ``hidden_size=768``), so its trainable parameter count matches F4's within
+  ``PARAM_MATCH_TOLERANCE``.
+- Weight decay exclusion (SPEC §결정 필요 사항): ``no_weight_decay_parameters`` exposes layer-
+  weighting parameters (F2 ``layer_logits`` and F4 ``gate`` weight/bias) so AdamW does not pull
+  F2/F4 towards uniform or static layer weights.
 """
 
 from __future__ import annotations
@@ -34,12 +37,12 @@ from layer_fusion.layers import HIDDEN_SIZE, NUM_LAYER_VECTORS, NUM_LAYERS, slot
 
 LAST_LAYER_SLOT = NUM_LAYERS  # slot 22: final-normed output of the last layer
 F3_NUM_LAST_LAYERS = 4  # layers 19..22
-# B0+ MLP hidden size by class count (ADR 0008: MNLI 26 / 2 classes 25). Other class counts,
-# e.g. the AG News 4-class fallback, are TBD in SPEC and deliberately not defined here.
+# B0+ MLP hidden size by class count at hidden_size=768 (ADR 0008: MNLI 26 / 2 classes 25).
+# Other class counts, e.g. the AG News 4-class fallback, are TBD in SPEC and not defined here.
 B0_PLUS_HIDDEN_SIZE = {3: 26, 2: 25}
 # B0+ and F4 count as "matched" when their trainable parameter counts differ by at most this
-# fraction of F4's (SPEC decision proposal, T-05b). The MLP hidden size is an integer, so an
-# exact match is impossible (each extra unit adds ~772 parameters).
+# fraction of F4's (SPEC §결정 필요 사항, T-05b). The MLP hidden size is an integer, so an
+# exact match is impossible (each extra unit adds ~772 parameters at hidden_size=768).
 PARAM_MATCH_TOLERANCE = 0.01
 
 
@@ -93,6 +96,18 @@ class _FusionHead(nn.Module):
     def combine(self, selected: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
+    def no_weight_decay_params(self) -> tuple[nn.Parameter, ...]:
+        """Layer-weighting parameters excluded from weight decay by role."""
+        return ()
+
+    def dataset_layer_weights(self) -> list[float] | None:
+        """Dataset-level layer weights (F2 only), else ``None``."""
+        return None
+
+    def document_layer_weights_for(self, layer_vectors: torch.Tensor) -> list[list[float]] | None:
+        """Per-document layer weights (F4 only), else ``None``."""
+        return None
+
     def forward(self, layer_vectors: torch.Tensor) -> torch.Tensor:
         return self.classifier(self.combine(self._select_and_normalize(layer_vectors)))
 
@@ -135,6 +150,12 @@ class F2Head(_FusionHead):
         """Normalized layer weights in ``self.slots`` order (non-negative, sum to 1)."""
         return torch.softmax(self.layer_logits, dim=0)
 
+    def no_weight_decay_params(self) -> tuple[nn.Parameter, ...]:
+        return (self.layer_logits,)
+
+    def dataset_layer_weights(self) -> list[float] | None:
+        return [float(w) for w in self.layer_weights().detach().cpu()]
+
     def combine(self, selected: torch.Tensor) -> torch.Tensor:
         return torch.einsum("l,blh->bh", self.layer_weights(), selected)
 
@@ -153,9 +174,9 @@ class F3Head(_FusionHead):
 class F4Head(_FusionHead):
     """F4: per-document layer weights from a linear gate, then weighted sum -> classifier.
 
-    The gate reads the mean of the 23 per-layer-normed vectors (the F1 vector) and emits one
-    logit per layer; ``softmax`` turns them into weights (positive, sum to 1) that differ per
-    document. Gate weight and bias start at 0, so F4 starts as F1 (like F2).
+    The gate reads the mean of the 23 per-layer-normed vectors and emits one logit per layer;
+    ``softmax`` turns them into weights (positive, sum to 1) that differ per document. Gate
+    weight and bias start at 0, so F4 starts as F1 (like F2).
     """
 
     def __init__(self, num_classes: int, hidden_size: int) -> None:
@@ -169,6 +190,9 @@ class F4Head(_FusionHead):
         """Per-document weights ``[batch, 23]``; ``selected`` must already be per-layer-normed."""
         return torch.softmax(self.gate(selected.mean(dim=1)), dim=-1)
 
+    def no_weight_decay_params(self) -> tuple[nn.Parameter, ...]:
+        return (self.gate.weight, self.gate.bias)
+
     def combine(self, selected: torch.Tensor) -> torch.Tensor:
         return torch.einsum("bl,blh->bh", self._document_layer_weights(selected), selected)
 
@@ -178,6 +202,15 @@ class F4Head(_FusionHead):
         Normalizes first, so callers cannot skip per-layer LayerNorm by accident.
         """
         return self._document_layer_weights(self._select_and_normalize(layer_vectors))
+
+    def document_layer_weights_for(self, layer_vectors: torch.Tensor) -> list[list[float]] | None:
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.no_grad():
+                return self.layer_weights_for(layer_vectors).cpu().tolist()
+        finally:
+            self.train(was_training)
 
 
 class B0PlusHead(_FusionHead):
@@ -236,6 +269,24 @@ def count_trainable_parameters(module: nn.Module) -> int:
     return sum(p.numel() for p in module.parameters() if p.requires_grad)
 
 
+def no_weight_decay_parameters(module: nn.Module) -> tuple[nn.Parameter, ...]:
+    """Parameters excluded from weight decay by role across ``module`` and its submodules.
+
+    Walks ``module.modules()`` so wrappers such as ``FinetuneModel(backbone, head)`` work
+    without unwrapping.
+    """
+    seen: set[int] = set()
+    excluded: list[nn.Parameter] = []
+    for submodule in module.modules():
+        getter = getattr(submodule, "no_weight_decay_params", None)
+        if callable(getter):
+            for param in getter():
+                if id(param) not in seen:
+                    seen.add(id(param))
+                    excluded.append(param)
+    return tuple(excluded)
+
+
 def extract_layer_weights(module: nn.Module) -> list[float] | None:
     """Expose dataset-level (F2) layer weights if applicable.
 
@@ -243,8 +294,8 @@ def extract_layer_weights(module: nn.Module) -> list[float] | None:
     global-only, 14 for local-only). Other heads have no dataset-level layer weights ->
     ``None``; F4's weights depend on the document, see ``extract_document_layer_weights``.
     """
-    if isinstance(module, F2Head):
-        return [float(w) for w in module.layer_weights().detach().cpu()]
+    if isinstance(module, _FusionHead):
+        return module.dataset_layer_weights()
     return None
 
 
@@ -254,8 +305,8 @@ def extract_document_layer_weights(
     """Expose F4's per-document layer weights: ``[batch][23]`` (slot order), else ``None``.
 
     ``layer_vectors`` is the raw ``[batch, 23, hidden]`` input the head's ``forward`` takes.
+    Runs in ``eval()`` mode under ``torch.no_grad()`` and restores the module's prior mode.
     """
-    if isinstance(module, F4Head):
-        with torch.no_grad():
-            return module.layer_weights_for(layer_vectors).cpu().tolist()
+    if isinstance(module, _FusionHead):
+        return module.document_layer_weights_for(layer_vectors)
     return None

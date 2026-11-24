@@ -166,11 +166,13 @@ def test_identical_tuning_budget_across_fusion_methods(
 
     provider = noisy_provider()
     base = make_run_config(provider)
+    params_by_method: dict[FusionMethod, int] = {}
     for fusion_method in FusionMethod:
         record = run_experiment(
             make_run_config(provider, fusion_method=fusion_method), provider, device="cpu"
         )
         assert record.trainable_params == EXPECTED_TRAINABLE_PARAMS[3][fusion_method]
+        params_by_method[fusion_method] = record.trainable_params
         # Every candidate was actually trained and scored on the tuning split.
         assert list(record.lr_tuning_scores) == list(base.lr_candidates)
         assert record.selected_lr in base.lr_candidates
@@ -179,6 +181,9 @@ def test_identical_tuning_budget_across_fusion_methods(
             base.early_stopping_patience,
         )
         assert 1 <= len(record.learning_curve) <= base.epochs
+    f4_params = params_by_method[FusionMethod.F4]
+    b0_plus_params = params_by_method[FusionMethod.B0_PLUS]
+    assert abs(b0_plus_params - f4_params) / f4_params <= 0.01
 
 
 def test_lr_selection_depends_only_on_tuning_split_not_eval_labels(

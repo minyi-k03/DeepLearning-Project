@@ -11,6 +11,7 @@ from layer_fusion.fusion import (  # noqa: E402
     count_trainable_parameters,
     extract_document_layer_weights,
     extract_layer_weights,
+    no_weight_decay_parameters,
 )
 from layer_fusion.layers import GLOBAL_LAYERS, LOCAL_LAYERS  # noqa: E402
 
@@ -21,6 +22,7 @@ TESTED_METHODS = list(FusionMethod)  # B0, F1, F2, F3, F4, B0+
 # Slots each head reads; all other slots must not affect its output.
 USED_SLOTS = {
     FusionMethod.B0: (22,),
+    FusionMethod.B0_PLUS: (22,),
     FusionMethod.F1: tuple(range(23)),
     FusionMethod.F2: tuple(range(23)),
     FusionMethod.F3: (19, 20, 21, 22),
@@ -45,11 +47,15 @@ def _set_f2_logits(head, seed: int = 1) -> None:
         head.layer_logits.copy_(_noise(head.layer_logits.numel(), seed=seed) * 2.0)
 
 
-def _set_f4_gate(head, seed: int = 3) -> None:
-    """Give the (zero-initialized) gate non-trivial values so documents get distinct weights."""
-    with torch.no_grad():
-        head.gate.weight.copy_(_noise(*head.gate.weight.shape, seed=seed))
-        head.gate.bias.copy_(_noise(*head.gate.bias.shape, seed=seed + 1))
+def _train_f4_step(head, seed: int = 3) -> None:
+    """Run public optimizer steps so the zero-initialized gate emits distinct weights."""
+    optimizer = torch.optim.Adam(head.parameters(), lr=0.5)
+    vectors = _vectors(batch=8, seed=seed)
+    targets = torch.arange(8) % NUM_CLASSES
+    for _ in range(5):
+        optimizer.zero_grad()
+        torch.nn.functional.cross_entropy(head(vectors), targets).backward()
+        optimizer.step()
 
 
 def _rescale_per_layer(vectors: "torch.Tensor") -> "torch.Tensor":
@@ -88,7 +94,7 @@ def test_every_head_is_invariant_to_per_layer_affine_rescaling(method: FusionMet
     if method == FusionMethod.F2:
         _set_f2_logits(head)
     if method == FusionMethod.F4:
-        _set_f4_gate(head)  # a zero gate would hide what the gate reads
+        _train_f4_step(head)  # a zero gate would hide what the gate reads
     vectors = _vectors()
     assert torch.allclose(head(vectors), head(_rescale_per_layer(vectors)), atol=1e-4)
 
@@ -128,7 +134,9 @@ def test_logits_shape(method: FusionMethod, batch: int) -> None:
 # --- which slots each head reads -------------------------------------------------------
 
 
-@pytest.mark.parametrize("method", [FusionMethod.B0, FusionMethod.F3])  # F1/F2 read every slot
+@pytest.mark.parametrize(
+    "method", [FusionMethod.B0, FusionMethod.B0_PLUS, FusionMethod.F3]
+)  # F1/F2/F4 read every slot
 def test_heads_ignore_unused_slots(method: FusionMethod) -> None:
     unused = [s for s in range(23) if s not in USED_SLOTS[method]]
     head = _head(method)
@@ -138,7 +146,8 @@ def test_heads_ignore_unused_slots(method: FusionMethod) -> None:
 
 @pytest.mark.parametrize(
     ("method", "slot"),
-    [(FusionMethod.B0, 22)] + [(FusionMethod.F3, s) for s in (19, 20, 21, 22)],
+    [(FusionMethod.B0, 22), (FusionMethod.B0_PLUS, 22)]
+    + [(FusionMethod.F3, s) for s in (19, 20, 21, 22)],
 )
 def test_heads_react_to_each_used_slot(method: FusionMethod, slot: int) -> None:
     head = _head(method)
@@ -216,7 +225,9 @@ def test_f2_layer_logits_receive_nonzero_gradient() -> None:
     assert head.layer_logits.grad.norm() > 0
 
 
-@pytest.mark.parametrize("method", [FusionMethod.B0, FusionMethod.F1, FusionMethod.F3])
+@pytest.mark.parametrize(
+    "method", [FusionMethod.B0, FusionMethod.B0_PLUS, FusionMethod.F1, FusionMethod.F3]
+)
 def test_heads_without_learned_layer_weights_return_none(method: FusionMethod) -> None:
     assert extract_layer_weights(_head(method)) is None
 
@@ -237,16 +248,16 @@ def test_f4_starts_equal_to_f1() -> None:
 
 
 def test_f4_gate_reads_the_mean_of_the_per_layer_normed_vectors() -> None:
-    """SPEC decision proposal (T-05b): weights = softmax(W · mean_l LN(x_l) + b), per document.
+    """SPEC (T-05b): weights = softmax(W · mean_l LN(x_l) + b), per document.
 
-    The expected value is built from that definition with the gate's own (W, b), not from the
-    function under test, so a gate that reads one slot (or skips the norm) fails here.
+    White-box formula check using the gate's own trained (W, b), so a gate that reads only one
+    slot (or sums instead of averaging) fails here.
     """
     head = _head(FusionMethod.F4)
-    _set_f4_gate(head)
+    _train_f4_step(head)
     vectors = _vectors()
-    f1_vector = torch.nn.functional.layer_norm(vectors, (HIDDEN,)).mean(dim=1)
-    expected = torch.softmax(f1_vector @ head.gate.weight.T + head.gate.bias, dim=-1)
+    mean_normed = torch.nn.functional.layer_norm(vectors, (HIDDEN,)).mean(dim=1)
+    expected = torch.softmax(mean_normed @ head.gate.weight.T + head.gate.bias, dim=-1)
     actual = torch.tensor(extract_document_layer_weights(head, vectors))
     assert torch.allclose(actual, expected, atol=1e-6)
 
@@ -255,7 +266,7 @@ def test_f4_gate_reads_the_mean_of_the_per_layer_normed_vectors() -> None:
 def test_f4_document_weights_react_to_every_slot(slot: int) -> None:
     """US 33: the gate looks at all 23 layer vectors, not only the last one or the embedding."""
     head = _head(FusionMethod.F4)
-    _set_f4_gate(head)
+    _train_f4_step(head)
     vectors = _vectors()
     before = torch.tensor(extract_document_layer_weights(head, vectors))
     after = torch.tensor(extract_document_layer_weights(head, _perturb(vectors, [slot])))
@@ -264,7 +275,7 @@ def test_f4_document_weights_react_to_every_slot(slot: int) -> None:
 
 def test_f4_document_weights_are_positive_sum_to_one_and_differ_per_document() -> None:
     head = _head(FusionMethod.F4)
-    _set_f4_gate(head)
+    _train_f4_step(head)
     weights = torch.tensor(extract_document_layer_weights(head, _vectors()))
     assert weights.shape == (BATCH, 23)
     assert (weights > 0).all()
@@ -275,7 +286,7 @@ def test_f4_document_weights_are_positive_sum_to_one_and_differ_per_document() -
 
 def test_f4_forward_equals_hand_computed_per_document_weighted_sum() -> None:
     head = _head(FusionMethod.F4)
-    _set_f4_gate(head)
+    _train_f4_step(head)
     vectors = _vectors()
     weights = torch.tensor(extract_document_layer_weights(head, vectors))
     normed = torch.nn.functional.layer_norm(vectors, (HIDDEN,))
@@ -288,7 +299,7 @@ def test_f4_forward_equals_hand_computed_per_document_weighted_sum() -> None:
 def test_f4_document_weights_are_invariant_to_per_layer_affine_rescaling() -> None:
     """US 28 for F4: the gate sees per-layer-normed vectors, so weights do not follow scale."""
     head = _head(FusionMethod.F4)
-    _set_f4_gate(head)
+    _train_f4_step(head)
     vectors = _vectors()
     rescaled = _rescale_per_layer(vectors)
     assert torch.allclose(
@@ -298,11 +309,36 @@ def test_f4_document_weights_are_invariant_to_per_layer_affine_rescaling() -> No
     )
 
 
-def test_f4_gate_receives_nonzero_gradient() -> None:
+def test_f4_training_step_moves_document_weights_away_from_uniform() -> None:
+    """Outer behavior: one gradient step moves F4 away from uniform F1 and varies per document."""
     head = _head(FusionMethod.F4)
-    head(_vectors()).pow(2).sum().backward()
-    assert head.gate.weight.grad is not None and head.gate.weight.grad.norm() > 0
-    assert head.gate.bias.grad is not None and head.gate.bias.grad.norm() > 0
+    vectors = _vectors()
+    uniform = torch.full((BATCH, 23), 1.0 / 23.0)
+    before = torch.tensor(extract_document_layer_weights(head, vectors))
+    assert torch.allclose(before, uniform, atol=1e-6)
+    _train_f4_step(head)
+    after = torch.tensor(extract_document_layer_weights(head, vectors))
+    assert not torch.allclose(after, uniform, atol=1e-3)
+    assert (after[0] - after[1]).abs().max() > 1e-3
+
+
+def test_extract_document_layer_weights_preserves_training_mode() -> None:
+    head = _head(FusionMethod.F4)
+    head.train()
+    assert extract_document_layer_weights(head, _vectors()) is not None
+    assert head.training is True
+    head.eval()
+    assert extract_document_layer_weights(head, _vectors()) is not None
+    assert head.training is False
+
+
+def test_no_weight_decay_parameters_marks_only_layer_weighting_params() -> None:
+    for method in (FusionMethod.B0, FusionMethod.F1, FusionMethod.F3, FusionMethod.B0_PLUS):
+        assert no_weight_decay_parameters(_head(method)) == ()
+    f2_excluded = no_weight_decay_parameters(_head(FusionMethod.F2))
+    assert sum(p.numel() for p in f2_excluded) == 23
+    f4_excluded = no_weight_decay_parameters(_head(FusionMethod.F4))
+    assert sum(p.numel() for p in f4_excluded) == HIDDEN * 23 + 23
 
 
 def test_f4_exposes_document_weights_but_no_dataset_level_weights() -> None:
@@ -312,7 +348,8 @@ def test_f4_exposes_document_weights_but_no_dataset_level_weights() -> None:
 
 
 @pytest.mark.parametrize(
-    "method", [FusionMethod.B0, FusionMethod.F1, FusionMethod.F2, FusionMethod.F3]
+    "method",
+    [FusionMethod.B0, FusionMethod.B0_PLUS, FusionMethod.F1, FusionMethod.F2, FusionMethod.F3],
 )
 def test_heads_without_gate_have_no_document_weights(method: FusionMethod) -> None:
     assert extract_document_layer_weights(_head(method), _vectors()) is None
@@ -339,14 +376,6 @@ def test_b0_plus_hidden_size_is_undecided_for_other_class_counts(num_classes: in
         build_fusion_head(FusionMethod.B0_PLUS, num_classes, hidden_size=HIDDEN)
 
 
-def test_b0_plus_reads_only_the_last_layer_vector() -> None:
-    head = _head(FusionMethod.B0_PLUS)
-    vectors = _vectors()
-    unused = [s for s in range(23) if s != 22]
-    assert torch.allclose(head(vectors), head(_perturb(vectors, unused)), atol=1e-5)
-    assert not torch.allclose(head(vectors), head(_perturb(vectors, [22])), atol=1e-3)
-
-
 def test_b0_plus_is_a_nonlinear_mlp_not_a_linear_classifier() -> None:
     """Shape differs from B0 on purpose (ADR 0008): f(x) + f(-x) != 2 f(0) for a ReLU MLP."""
     head = _head(FusionMethod.B0_PLUS)
@@ -356,12 +385,6 @@ def test_b0_plus_is_a_nonlinear_mlp_not_a_linear_classifier() -> None:
     zeros = torch.zeros_like(vectors)  # normalized to 0 -> MLP input 0
     midpoint = (head(vectors) + head(mirrored)) / 2
     assert not torch.allclose(midpoint, head(zeros), atol=1e-3)
-
-
-def test_b0_plus_has_no_layer_weights() -> None:
-    head = _head(FusionMethod.B0_PLUS)
-    assert extract_layer_weights(head) is None
-    assert extract_document_layer_weights(head, _vectors()) is None
 
 
 def test_b0_plus_every_parameter_receives_gradient() -> None:
