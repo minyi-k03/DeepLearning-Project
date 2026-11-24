@@ -388,3 +388,22 @@ def test_real_modernbert_finetune_debug_run_on_cpu() -> None:
     record = run_experiment(config, provider, device="cpu")
     assert len(record.predictions) == 4
     assert record.trainable_params > 100_000_000  # ModernBERT-base itself trains
+
+
+def test_finetune_optimizer_keeps_the_role_based_decay_rule() -> None:
+    """PR #18 rule through the FinetuneModel wrapper: F4 gate and bias get no decay, while
+    the backbone's and classifier's weight matrices get 0.01 (SPEC 학습 루프)."""
+    from layer_fusion.training import make_optimizer
+
+    model = FinetuneModel(FakeBackbone(), build_fusion_head(FusionMethod.F4, 3))
+    decay_of = {
+        id(p): group["weight_decay"]
+        for group in make_optimizer(model, 1e-3).param_groups
+        for p in group["params"]
+    }
+    gate = [m for m in model.head.modules() if isinstance(m, nn.Linear)
+            and m.out_features == NUM_LAYER_VECTORS]
+    assert gate, "F4 head should own a gate producing one logit per layer vector"
+    assert decay_of[id(gate[0].weight)] == 0.0 and decay_of[id(gate[0].bias)] == 0.0
+    assert decay_of[id(model.backbone.embed.weight)] == 0.01
+    assert all(decay_of[id(p)] == 0.0 for p in model.parameters() if p.ndim < 2)
