@@ -7,9 +7,11 @@ module's own formulas (tdd skill: no tautological assertions).
 from __future__ import annotations
 
 import csv
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from layer_fusion.contracts import (
@@ -157,6 +159,51 @@ def test_trainable_params_that_differ_inside_a_cell_are_refused() -> None:
         generate_summary_table(records)
 
 
+def with_config(record: ResultRecord, **changes: object) -> ResultRecord:
+    record.config = replace(record.config, **changes)
+    return record
+
+
+def test_two_records_for_the_same_seed_in_one_cell_are_refused() -> None:
+    # Pooled, they would give n_seeds=2 and a std of 0 from what is really one seed.
+    records = [make_record(FusionMethod.B0, 0, 0.10), make_record(FusionMethod.B0, 0, 0.10)]
+
+    with pytest.raises(ValueError, match="seed 0"):
+        generate_summary_table(records)
+
+
+def test_records_trained_under_different_settings_are_not_pooled_into_one_cell() -> None:
+    records = [
+        make_record(FusionMethod.B0, 0, 0.10),
+        with_config(make_record(FusionMethod.B0, 1, 0.12), epochs=20),
+    ]
+
+    with pytest.raises(ValueError, match="epochs"):
+        generate_summary_table(records)
+
+
+def test_seeds_of_one_cell_may_differ_in_the_reused_learning_rate_fields() -> None:
+    # SPEC §결정 필요 사항 (T-06a): the first seed selects the LR, the other seeds reuse it.
+    records = [
+        make_record(FusionMethod.B0, 0, 0.10),
+        with_config(make_record(FusionMethod.B0, 1, 0.12), fixed_lr=1e-3, lr_selection_seed=0),
+    ]
+
+    rows = generate_summary_table(records)
+
+    assert rows[0]["n_seeds"] == 2
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+@pytest.mark.parametrize("n_seeds", [1, 2])
+def test_non_finite_error_rates_are_refused(bad: float, n_seeds: int) -> None:
+    records = [make_record(FusionMethod.B0, 0, bad)]
+    records += [make_record(FusionMethod.B0, s, 0.10) for s in range(1, n_seeds)]
+
+    with pytest.raises(ValueError, match="finite"):
+        generate_summary_table(records)
+
+
 def read_csv(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
@@ -279,15 +326,99 @@ def test_below_min_sample_flag_marks_buckets_smaller_than_the_threshold(
     assert {r["below_min_samples"] for r in rows} == {expected}
 
 
-def test_seeds_that_disagree_on_bucket_doc_counts_are_refused(tmp_path: Path) -> None:
-    shorter = IMDB_DOCS[:-1]  # drops one >1024 doc
+def renamed(record: ResultRecord, prefix: str) -> ResultRecord:
+    """Same lengths and buckets, other documents."""
+    record.predictions = [
+        replace(p, doc_id=f"{prefix}-{i:03d}") for i, p in enumerate(record.predictions)
+    ]
+    return record
+
+
+@pytest.mark.parametrize(
+    "seed_1",
+    [
+        pytest.param(
+            lambda: make_imdb_record(FusionMethod.F1, 1, set(), docs=IMDB_DOCS[:-1]),
+            id="one-document-fewer",
+        ),
+        pytest.param(
+            lambda: renamed(make_imdb_record(FusionMethod.F1, 1, set()), "other"),
+            id="same-counts-other-documents",
+        ),
+    ],
+)
+def test_seeds_evaluated_on_different_documents_are_refused(
+    tmp_path: Path, seed_1: Callable[[], ResultRecord]
+) -> None:
+    records = [make_imdb_record(FusionMethod.F1, 0, set()), seed_1()]
+
+    with pytest.raises(ValueError, match="same documents"):
+        generate_report_artifacts(records, JudgmentReport(judgments={}), tmp_path)
+
+
+def test_mnli_seeds_evaluated_on_different_documents_are_refused() -> None:
+    # MNLI has no input setting, so only the per-cell check guards the seed mean.
+    records = [make_record(FusionMethod.B0, s, 0.5) for s in range(2)]
+    records[0].predictions = [PredictionRecord("mnli-0", 1, 1), PredictionRecord("mnli-1", 1, 0)]
+    records[1].predictions = [PredictionRecord("mnli-0", 1, 1), PredictionRecord("mnli-2", 1, 0)]
+
+    with pytest.raises(ValueError, match="same documents"):
+        generate_summary_table(records)
+
+
+def test_runs_of_one_input_setting_evaluated_on_different_documents_are_refused(
+    tmp_path: Path,
+) -> None:
+    # Different cells, so the per-cell check passes; the view ratio table pools per setting.
     records = [
-        make_imdb_record(FusionMethod.F1, 0, set()),
-        make_imdb_record(FusionMethod.F1, 1, set(), docs=shorter),
+        make_imdb_record(FusionMethod.B0, 0, set()),
+        make_imdb_record(FusionMethod.F1, 0, set(), docs=IMDB_DOCS[:-1]),
     ]
 
-    with pytest.raises(ValueError, match="n_docs"):
+    with pytest.raises(ValueError, match="same documents"):
         generate_report_artifacts(records, JudgmentReport(judgments={}), tmp_path)
+
+
+def test_a_document_evaluated_twice_in_one_run_is_refused(tmp_path: Path) -> None:
+    record = make_imdb_record(FusionMethod.F1, 0, set())
+    record.predictions.append(record.predictions[0])
+
+    with pytest.raises(ValueError, match="imdb-000"):
+        generate_report_artifacts([record], JudgmentReport(judgments={}), tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("token_length", "bucket"),
+    [
+        pytest.param(100, LengthBucket.GT_1024, id="100-tokens-tagged-over-1024"),
+        pytest.param(None, LengthBucket.LE_512, id="bucket-without-length"),
+        pytest.param(600, None, id="imdb-length-without-bucket"),
+    ],
+)
+def test_predictions_whose_length_and_bucket_disagree_are_refused(
+    tmp_path: Path, token_length: int | None, bucket: LengthBucket | None
+) -> None:
+    record = make_imdb_record(FusionMethod.F1, 0, set(), docs=[(100, LengthBucket.LE_512)])
+    record.predictions = [
+        replace(record.predictions[0], token_length=token_length, length_bucket=bucket)
+    ]
+
+    with pytest.raises(ValueError, match="length"):
+        generate_report_artifacts([record], JudgmentReport(judgments={}), tmp_path)
+
+
+def test_mnli_token_lengths_without_length_buckets_are_accepted(tmp_path: Path) -> None:
+    """The runner records token_length for every dataset, a bucket only under an input setting."""
+    records = [make_record(FusionMethod.B0, s, 0.5) for s in range(2)]
+    for record in records:
+        record.predictions = [
+            PredictionRecord("mnli-0", label=1, prediction=0, token_length=40),
+            PredictionRecord("mnli-1", label=1, prediction=1, token_length=900),
+        ]
+
+    paths = generate_report_artifacts(records, JudgmentReport(judgments={}), tmp_path)
+
+    assert {p.name for p in paths} == {"summary_table.csv"}  # no bucket or view ratio table
 
 
 def test_no_length_bucket_file_when_no_record_has_length_buckets(tmp_path: Path) -> None:
@@ -336,6 +467,12 @@ def test_view_ratio_table_uses_the_model_input_length_per_input_setting(tmp_path
     paths = generate_report_artifacts(records, JudgmentReport(judgments={}), tmp_path)
 
     rows = read_csv(artifact(paths, "view_ratio_table.csv"))
+    assert [r["length_bucket"] for r in rows if r["input_setting"] == "L128"] == [
+        "<=512",
+        "512-1024",
+        ">1024",
+        "all",
+    ]
     table = {(r["input_setting"], r["length_bucket"]): r for r in rows}
     assert float(table["L128", "all"]["mean_view_ratio"]) == pytest.approx(0.754, abs=1e-3)
     assert float(table["L128", ">1024"]["mean_view_ratio"]) == pytest.approx(0.754, abs=1e-3)
@@ -349,7 +486,43 @@ def test_view_ratio_table_uses_the_model_input_length_per_input_setting(tmp_path
     assert float(table["Lfull", ">1024"]["mean_view_ratio"]) == pytest.approx(137740 / 1100**2)
 
 
+def test_length_bucket_and_view_ratio_tables_leave_out_debug_and_reproduction_runs(
+    tmp_path: Path,
+) -> None:
+    main = [make_imdb_record(FusionMethod.F1, s, set()) for s in range(2)]
+    debug = make_imdb_record(FusionMethod.F1, 2, {0, 1}, docs=IMDB_DOCS[:2])  # a debug subset
+    debug.config = replace(debug.config, run_kind=RunKind.DEBUG)
+    reproduction = make_imdb_record(FusionMethod.F1, 3, {0, 1, 2, 3, 4, 5})
+    reproduction.config = replace(reproduction.config, track=TrackKind.REPRODUCTION)
+    extra = make_imdb_record(  # another doc set and lengths in L128: only seen if not excluded
+        FusionMethod.B0, 0, set(), input_setting=InputSetting.L128, docs=[(50, LengthBucket.LE_512)]
+    )
+    extra.config = replace(extra.config, run_kind=RunKind.DEBUG)
+
+    main_only = generate_report_artifacts(main, JudgmentReport(judgments={}), tmp_path / "main")
+    mixed = generate_report_artifacts(
+        [*main, debug, reproduction, extra], JudgmentReport(judgments={}), tmp_path / "mixed"
+    )
+
+    for name in ("length_bucket_table.csv", "view_ratio_table.csv"):
+        assert read_csv(artifact(mixed, name)) == read_csv(artifact(main_only, name)), name
+    buckets = read_csv(artifact(mixed, "length_bucket_table.csv"))
+    assert {(r["n_docs"], r["n_seeds"], float(r["error_rate_mean"])) for r in buckets} == {
+        ("2", "2", 0.0)
+    }
+    assert {r["input_setting"] for r in read_csv(artifact(mixed, "view_ratio_table.csv"))} == {
+        "L512"
+    }
+
+
 PNG_SIGNATURE = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+
+
+def pixels(path: Path) -> np.ndarray:
+    """Decoded image, so figures are compared by what they show, not by PNG metadata."""
+    from matplotlib.image import imread
+
+    return imread(path)
 
 
 def make_f2_record(
@@ -358,8 +531,9 @@ def make_f2_record(
     *,
     subset: LayerSubset = LayerSubset.GLOBAL_ONLY,
     run_kind: RunKind = RunKind.MAIN,
+    track: TrackKind = TrackKind.MAIN,
 ) -> ResultRecord:
-    record = make_record(FusionMethod.F2, seed, 0.1, run_kind=run_kind)
+    record = make_record(FusionMethod.F2, seed, 0.1, run_kind=run_kind, track=track)
     record.config = replace(record.config, layer_subset=subset)
     record.layer_weights = weights
     return record
@@ -374,6 +548,7 @@ def test_layer_weight_table_gives_seed_mean_and_std_per_layer_and_a_figure(
         make_f2_record(0, [0.125] * 8),
         make_f2_record(1, [0.5, 0.5, 0, 0, 0, 0, 0, 0]),
         make_f2_record(2, [9.0] * 8, run_kind=RunKind.DEBUG),  # must not enter the mean
+        make_f2_record(3, [7.0] * 8, track=TrackKind.REPRODUCTION),  # nor this one
         make_record(FusionMethod.F1, 0, 0.1),  # no layer weights: not part of this table
     ]
 
@@ -401,6 +576,51 @@ def test_all_layers_f2_labels_the_embedding_slot_instead_of_calling_it_layer_zer
     assert len(rows) == 23
     assert rows[0]["layer"] == "embedding"  # GLOSSARY: the embedding vector has no layer number
     assert [r["layer"] for r in rows[1:]] == [str(i) for i in range(1, 23)]
+
+
+def test_single_seed_f2_has_no_weight_std_and_still_gets_a_figure(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+
+    paths = generate_report_artifacts(
+        [make_f2_record(0, [0.125] * 8)], JudgmentReport(judgments={}), tmp_path
+    )
+
+    rows = read_csv(artifact(paths, "layer_weights_table.csv"))
+    assert {(r["n_seeds"], r["weight_std"]) for r in rows} == {("1", "")}  # no fake 0
+    assert artifact(paths, "layer_weights.png").read_bytes().startswith(PNG_SIGNATURE)
+
+
+def test_layer_weight_figure_shows_the_weights(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+
+    def figure(weights: list[float], name: str) -> np.ndarray:
+        paths = generate_report_artifacts(
+            [make_f2_record(0, weights)], JudgmentReport(judgments={}), tmp_path / name
+        )
+        return pixels(artifact(paths, "layer_weights.png"))
+
+    flat = figure([0.125] * 8, "flat")
+    peaked = figure([0.5, 0.5, 0, 0, 0, 0, 0, 0], "peaked")
+
+    assert flat.shape == peaked.shape  # same cell, same layout
+    assert not np.array_equal(flat, peaked)
+
+
+@pytest.mark.parametrize(
+    "weights_by_seed",
+    [
+        pytest.param([[0.125] * 8, None], id="one-seed-missing"),
+        pytest.param([None, None], id="all-seeds-missing"),
+    ],
+)
+def test_every_f2_run_must_carry_its_layer_weights(
+    tmp_path: Path, weights_by_seed: list[list[float] | None]
+) -> None:
+    # Otherwise the summary says n_seeds=2 while the weight table silently uses fewer seeds.
+    records = [make_f2_record(s, w) for s, w in enumerate(weights_by_seed)]
+
+    with pytest.raises(ValueError, match="layer_weights"):
+        generate_report_artifacts(records, JudgmentReport(judgments={}), tmp_path)
 
 
 def test_layer_weight_count_must_match_the_layer_subset(tmp_path: Path) -> None:
@@ -443,6 +663,42 @@ def test_learning_curve_figure_is_written_from_main_records(tmp_path: Path) -> N
     paths = generate_report_artifacts(records, JudgmentReport(judgments={}), tmp_path)
 
     assert artifact(paths, "learning_curves.png").read_bytes().startswith(PNG_SIGNATURE)
+
+
+def curve_record(
+    method: FusionMethod, seed: int, *errors: float, **kwargs: RunKind | TrackKind
+) -> ResultRecord:
+    record = make_record(method, seed, 0.3, **kwargs)  # type: ignore[arg-type]
+    record.learning_curve = curve(*errors)
+    return record
+
+
+def curve_figure(records: list[ResultRecord], out: Path) -> np.ndarray:
+    paths = generate_report_artifacts(records, JudgmentReport(judgments={}), out)
+    return pixels(artifact(paths, "learning_curves.png"))
+
+
+def test_learning_curve_figure_leaves_out_debug_and_reproduction_curves(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+    main = [curve_record(FusionMethod.B0, s, 0.5, 0.4, 0.3) for s in range(2)]
+    excluded = [
+        curve_record(FusionMethod.B0, 2, 0.9, 0.05, 0.9, run_kind=RunKind.DEBUG),
+        curve_record(FusionMethod.B0, 3, 0.05, 0.95, 0.05, track=TrackKind.REPRODUCTION),
+    ]
+
+    assert np.array_equal(
+        curve_figure([*main, *excluded], tmp_path / "mixed"), curve_figure(main, tmp_path / "main")
+    )
+
+
+def test_learning_curve_figure_shows_the_tuning_errors(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+
+    falling = curve_figure([curve_record(FusionMethod.B0, 0, 0.5, 0.4, 0.3)], tmp_path / "a")
+    rising = curve_figure([curve_record(FusionMethod.B0, 0, 0.3, 0.4, 0.5)], tmp_path / "b")
+
+    assert falling.shape == rising.shape
+    assert not np.array_equal(falling, rising)
 
 
 def test_no_learning_curve_figure_when_only_debug_records_have_curves(tmp_path: Path) -> None:

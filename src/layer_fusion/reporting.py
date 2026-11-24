@@ -3,21 +3,25 @@
 from __future__ import annotations
 
 import csv
+import math
 import statistics
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import fields
 from functools import cache
 from pathlib import Path
 from typing import NamedTuple
 
 from layer_fusion.contracts import (
+    FusionMethod,
     InputSetting,
     JudgmentReport,
     LayerSubset,
     LengthBucket,
     ResultRecord,
+    RunConfig,
 )
-from layer_fusion.inputs import compute_view_ratio, max_length_cap
+from layer_fusion.inputs import assign_length_bucket, compute_view_ratio, max_length_cap
 from layer_fusion.judgment import select_main_records
 from layer_fusion.layers import EMBEDDING_SLOT, slots_for_subset
 
@@ -38,6 +42,14 @@ class _Cell(NamedTuple):
         return self[:4]
 
 
+# The only RunConfig fields the seeds of one cell may differ in: the seed, and the learning rate
+# the first seed selects and the other seeds reuse (SPEC §결정 필요 사항, T-06a). The judgment
+# seam's one-cell rule is the same, plus fusion_method, which is part of the cell here.
+_SEED_FREE_FIELDS = frozenset({"seed", "fixed_lr", "lr_selection_seed"})
+
+_Document = tuple[int | None, LengthBucket | None]  # (token_length, length_bucket)
+
+
 def _cell_key(record: ResultRecord) -> _Cell:
     config = record.config
     return _Cell(
@@ -52,23 +64,80 @@ def _cell_key(record: ResultRecord) -> _Cell:
 
 def _mean_std(values: Sequence[float]) -> tuple[float, float | None]:
     """Mean and sample std (ddof=1); the std is ``None`` for one seed, never a fake 0."""
+    if not all(math.isfinite(v) for v in values):
+        raise ValueError(f"values must be finite, got {list(values)}")
     return statistics.fmean(values), (statistics.stdev(values) if len(values) > 1 else None)
 
 
-def _group_main_records(
-    records: Sequence[ResultRecord],
-) -> dict[_Cell, list[ResultRecord]]:
-    """Group records into experiment cells; debug and reproduction records never enter."""
+def _documents(record: ResultRecord) -> dict[str, _Document]:
+    """The run's evaluated documents; a repeated doc_id or a length/bucket mismatch is refused.
+
+    The runner records ``token_length`` for every dataset but a length bucket only under an
+    input setting (IMDB), so MNLI/SST-2 predictions carry a length and no bucket.
+    """
+    has_setting = record.config.input_setting is not None
+    documents: dict[str, _Document] = {}
+    for pred in record.predictions:
+        if pred.doc_id in documents:
+            raise ValueError(f"run {record.run_id!r} evaluates doc {pred.doc_id!r} twice")
+        expected = (
+            assign_length_bucket(pred.token_length)
+            if has_setting and pred.token_length is not None
+            else None
+        )
+        if pred.length_bucket is not expected:
+            raise ValueError(
+                f"doc {pred.doc_id!r} of run {record.run_id!r}: token length "
+                f"{pred.token_length} does not match length bucket {pred.length_bucket}"
+            )
+        documents[pred.doc_id] = (pred.token_length, pred.length_bucket)
+    return documents
+
+
+def _check_cell(key: _Cell, cell: Sequence[ResultRecord]) -> None:
+    """Refuse what would make a seed mean +- std lie about the cell.
+
+    That is a seed counted twice, a run trained under another setting (epochs, batch size, ...),
+    or seeds evaluated on different documents.
+    """
+    reference = cell[0]
+    reference_docs = _documents(reference)
+    seeds = {reference.config.seed}
+    for record in cell[1:]:
+        if record.config.seed in seeds:
+            raise ValueError(f"cell {key} has more than one record for seed {record.config.seed}")
+        seeds.add(record.config.seed)
+        differing = [
+            f.name
+            for f in fields(RunConfig)
+            if f.name not in _SEED_FREE_FIELDS
+            and getattr(record.config, f.name) != getattr(reference.config, f.name)
+        ]
+        if differing:
+            raise ValueError(
+                f"runs {reference.run_id!r} and {record.run_id!r} of cell {key} differ in "
+                f"{differing}; seeds may differ only in {sorted(_SEED_FREE_FIELDS)}"
+            )
+        if _documents(record) != reference_docs:
+            raise ValueError(
+                f"runs {reference.run_id!r} and {record.run_id!r} of cell {key}: seeds must be "
+                "evaluated on the same documents (doc ids, token lengths and buckets)"
+            )
+
+
+def _cells(main_records: Sequence[ResultRecord]) -> dict[_Cell, list[ResultRecord]]:
+    """Group main records (debug and reproduction already dropped) into checked cells."""
     cells: dict[_Cell, list[ResultRecord]] = defaultdict(list)
-    for record in select_main_records(records):
+    for record in main_records:
         cells[_cell_key(record)].append(record)
+    for key, cell in cells.items():
+        _check_cell(key, cell)
     return cells
 
 
-def generate_summary_table(records: Sequence[ResultRecord]) -> list[dict[str, object]]:
-    """Build table with error rate (mean +- std), trainable params, and train time."""
+def _summary_rows(cells: dict[_Cell, list[ResultRecord]]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for key, cell in _group_main_records(records).items():
+    for key, cell in cells.items():
         params = {r.trainable_params for r in cell}
         if len(params) > 1:
             raise ValueError(f"trainable_params differ inside one cell {key}: {sorted(params)}")
@@ -88,30 +157,33 @@ def generate_summary_table(records: Sequence[ResultRecord]) -> list[dict[str, ob
     return rows
 
 
+def generate_summary_table(records: Sequence[ResultRecord]) -> list[dict[str, object]]:
+    """Build table with error rate (mean +- std), trainable params, and train time.
+
+    Debug and reproduction records are left out (ADR 0004, 0009).
+    """
+    return _summary_rows(_cells(select_main_records(records)))
+
+
 def _length_bucket_rows(
-    records: Sequence[ResultRecord], min_bucket_samples: int | None
+    cells: dict[_Cell, list[ResultRecord]], min_bucket_samples: int | None
 ) -> list[dict[str, object]]:
     """Per cell and length bucket: document count and error rate (mean +- std over seeds).
 
-    ``below_min_samples`` stays ``None`` while the threshold is undecided (SPEC §결정 필요 사항).
+    The seeds of a cell share their documents (``_check_cell``), so every seed has the same
+    count per bucket. ``below_min_samples`` stays ``None`` while the threshold is undecided
+    (SPEC §결정 필요 사항).
     """
     rows: list[dict[str, object]] = []
-    for key, cell in _group_main_records(records).items():
+    for key, cell in cells.items():
         for bucket in LengthBucket:
             in_bucket = [[p for p in r.predictions if p.length_bucket is bucket] for r in cell]
-            counts = {len(preds) for preds in in_bucket}
-            if counts == {0}:
+            n_docs = len(in_bucket[0])
+            if n_docs == 0:
                 continue
-            if len(counts) > 1:
-                raise ValueError(
-                    f"n_docs in bucket {bucket.value!r} differs across seeds {sorted(counts)} "
-                    f"in cell {key}: seeds must be evaluated on the same documents"
-                )
-            error_rates = [
-                sum(p.prediction != p.label for p in preds) / len(preds) for preds in in_bucket
-            ]
-            error_mean, error_std = _mean_std(error_rates)
-            n_docs = counts.pop()
+            error_mean, error_std = _mean_std(
+                [sum(p.prediction != p.label for p in preds) / n_docs for preds in in_bucket]
+            )
             rows.append(
                 {
                     **key._asdict(),
@@ -131,37 +203,38 @@ def _length_bucket_rows(
 _cached_view_ratio = cache(compute_view_ratio)  # O(length) each; many documents share a length
 
 
-def _view_ratio_rows(records: Sequence[ResultRecord]) -> list[dict[str, object]]:
+def _view_ratio_rows(main_records: Sequence[ResultRecord]) -> list[dict[str, object]]:
     """Mean local-layer view ratio per input setting and length bucket, one row set per setting.
 
     The view ratio is a property of the document and the model input, not of the fusion method,
-    so each document is counted once per input setting however many runs evaluated it. The
-    ratio uses the input length the model actually saw (``min(token_length, cap)``): an L128
-    input has 128 tokens whatever the original review length (SPEC US 18, 19).
+    so each document is counted once per input setting however many runs evaluated it; those
+    runs must share their documents. The ratio uses the input length the model actually saw:
+    L128/L512 cut a longer review to 128/512 tokens (SPEC US 18, 19). Lfull does not cut; a
+    review over the Lfull cap is refused at tokenization (inputs.py), so its input length is
+    its token length.
     """
-    documents: dict[str, dict[str, tuple[int, LengthBucket]]] = defaultdict(dict)
-    for record in select_main_records(records):
+    documents: dict[str, dict[str, _Document]] = {}
+    for record in main_records:
         setting = record.config.input_setting
-        if setting is None:
+        if setting is None or not record.predictions:
             continue
-        for pred in record.predictions:
-            if pred.token_length is None or pred.length_bucket is None:
-                continue
-            seen = documents[setting.value].setdefault(
-                pred.doc_id, (pred.token_length, pred.length_bucket)
+        docs = _documents(record)
+        if docs != documents.setdefault(setting.value, docs):
+            raise ValueError(
+                f"runs of input setting {setting.value} must be evaluated on the same documents; "
+                f"run {record.run_id!r} differs"
             )
-            if seen != (pred.token_length, pred.length_bucket):
-                raise ValueError(
-                    f"doc {pred.doc_id!r} has different token length/bucket across runs "
-                    f"in input setting {setting.value}"
-                )
 
     rows: list[dict[str, object]] = []
     for setting_name, docs in documents.items():
-        cap = max_length_cap(InputSetting(setting_name), None)  # Lfull: never truncated
+        cap = max_length_cap(InputSetting(setting_name), None)  # None for Lfull: not cut
         ratios: dict[LengthBucket, list[float]] = defaultdict(list)
         for length, bucket in docs.values():
+            if length is None or bucket is None:
+                continue
             ratios[bucket].append(_cached_view_ratio(length if cap is None else min(length, cap)))
+        if not ratios:
+            continue
         groups = [(b.value, ratios[b]) for b in LengthBucket if ratios[b]]
         groups.append(("all", [r for b in LengthBucket for r in ratios[b]]))
         for bucket_name, values in groups:
@@ -180,31 +253,36 @@ def _cell_title(key: Sequence[str]) -> str:
     return " / ".join(part for part in key if part)
 
 
-def _layer_weight_rows(records: Sequence[ResultRecord]) -> list[dict[str, object]]:
+def _layer_weight_rows(cells: dict[_Cell, list[ResultRecord]]) -> list[dict[str, object]]:
     """Seed mean +- std of dataset-level layer weights (F2) per cell and layer.
 
     The embedding vector has no layer number (GLOSSARY), so its row is labelled "embedding".
     """
     rows: list[dict[str, object]] = []
-    for key, cell in _group_main_records(records).items():
-        with_weights = [r for r in cell if r.layer_weights is not None]
-        if not with_weights:
+    for key, cell in cells.items():
+        missing = [r.run_id for r in cell if r.layer_weights is None]
+        if missing and (key.fusion_method == FusionMethod.F2.value or len(missing) < len(cell)):
+            raise ValueError(
+                f"layer_weights missing for runs {missing} of cell {key}: every F2 run and "
+                "every seed of a cell with layer weights must carry them"
+            )
+        if missing:
             continue
         slots = slots_for_subset(LayerSubset(key.layer_subset))
-        for record in with_weights:
-            n_weights = len(record.layer_weights or ())
-            if n_weights != len(slots):
+        weights = [r.layer_weights or [] for r in cell]
+        for record, record_weights in zip(cell, weights, strict=True):
+            if len(record_weights) != len(slots):
                 raise ValueError(
-                    f"layer_weights of run {record.run_id!r} has {n_weights} entries, "
+                    f"layer_weights of run {record.run_id!r} has {len(record_weights)} entries, "
                     f"but layer subset {key.layer_subset} has {len(slots)} slots"
                 )
         for position, slot in enumerate(slots):
-            mean, std = _mean_std([r.layer_weights[position] for r in with_weights])
+            mean, std = _mean_std([w[position] for w in weights])
             rows.append(
                 {
                     **key._asdict(),
                     "layer": "embedding" if slot == EMBEDDING_SLOT else slot,
-                    "n_seeds": len(with_weights),
+                    "n_seeds": len(cell),
                     "weight_mean": mean,
                     "weight_std": std,
                 }
@@ -226,7 +304,7 @@ def _plot_layer_weights(rows: Sequence[dict[str, object]], path: Path) -> Path:
         ax.bar(
             ["emb" if r["layer"] == "embedding" else str(r["layer"]) for r in panel],
             [float(r["weight_mean"]) for r in panel],
-            yerr=[float(r["weight_std"] or 0.0) for r in panel],
+            yerr=[float(r["weight_std"] or 0.0) for r in panel],  # one seed: no error bar
             capsize=2,
         )
         ax.set_title(_cell_title(key), fontsize=9)
@@ -245,13 +323,13 @@ def _method_label(record: ResultRecord) -> str:
     return config.fusion_method.value + suffix
 
 
-def _plot_learning_curves(records: Sequence[ResultRecord], path: Path) -> Path | None:
+def _plot_learning_curves(main_records: Sequence[ResultRecord], path: Path) -> Path | None:
     """Tuning-split error rate per epoch, one panel per experiment condition, one line per seed.
 
     Seeds stop at different epochs under early stopping, so lines are drawn per seed instead of
     averaged. Returns ``None`` when no main record carries a learning curve.
     """
-    curves = [r for r in select_main_records(records) if r.learning_curve]
+    curves = [r for r in main_records if r.learning_curve]
     if not curves:
         return None
     from matplotlib.figure import Figure  # lazy: tables work without matplotlib
@@ -323,20 +401,23 @@ def generate_report_artifacts(
 ) -> list[Path]:
     """Export result tables, learning curves, layer weight plots, bucket & view ratio tables.
 
-    Only main-track, non-debug records are used (ADR 0004, 0009). A table with no rows is not
-    written. ``min_bucket_samples`` is the length-bucket minimum sample rule (TBD until locked).
+    Debug and reproduction records are dropped here, once, before any table or figure is built
+    (ADR 0004, 0009). A table with no rows is not written. ``min_bucket_samples`` is the
+    length-bucket minimum sample rule (TBD until locked).
     """
+    main = select_main_records(records)
+    cells = _cells(main)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     tables = {
-        "summary_table.csv": generate_summary_table(records),
-        "length_bucket_table.csv": _length_bucket_rows(records, min_bucket_samples),
-        "view_ratio_table.csv": _view_ratio_rows(records),
-        "layer_weights_table.csv": _layer_weight_rows(records),
+        "summary_table.csv": _summary_rows(cells),
+        "length_bucket_table.csv": _length_bucket_rows(cells, min_bucket_samples),
+        "view_ratio_table.csv": _view_ratio_rows(main),
+        "layer_weights_table.csv": _layer_weight_rows(cells),
         "hypothesis_table.csv": _hypothesis_rows(judgment),
     }
     paths = [_write_csv(out / name, rows) for name, rows in tables.items() if rows]
-    curves_path = _plot_learning_curves(records, out / "learning_curves.png")
+    curves_path = _plot_learning_curves(main, out / "learning_curves.png")
     if curves_path is not None:
         paths.append(curves_path)
     if tables["layer_weights_table.csv"]:
