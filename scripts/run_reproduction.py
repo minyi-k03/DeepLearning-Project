@@ -10,8 +10,8 @@ Debug run (no lock, recorded as debug; what the paper does not state goes on the
     python scripts/run_reproduction.py --debug --datasets mnli --seeds 0 --limit 2000 \\
         --batch-size 32 --warmup-ratio 0.06 --lr-scheduler linear
 
-Records go to ``results/repro`` (separate from the main runs); a debug ``--limit N`` sample
-writes under ``results/repro/limitN`` so samples of different sizes never pass for each other
+Records go to ``results/reproduction`` (separate from the main runs); a debug ``--limit N`` sample
+writes under ``results/reproduction/limitN`` so samples of different sizes never pass for each other
 on resume. An existing record is skipped only when it was made with the same config; the first
 failing run stops the command. Each result is printed next to the paper's error rate.
 """
@@ -42,7 +42,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--datasets", nargs="+", default=None, choices=[d.value for d in REPRODUCTION_DATASETS]
     )
-    parser.add_argument("--output-dir", default="results/repro")
+    parser.add_argument("--output-dir", default="results/reproduction")
     parser.add_argument("--lock-file", default=str(DEFAULT_LOCK_PATH))
     parser.add_argument("--device", default=None, help="cpu / cuda (default: cuda if available)")
     parser.add_argument("--dry-run", action="store_true", help="print the runs, run nothing")

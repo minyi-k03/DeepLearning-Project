@@ -222,11 +222,20 @@ def save_result_record(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text + "\n")
+        # mkstemp creates the file 0600; give it the mode a plain open() would, so records
+        # written as root in the container stay readable from the host account.
+        os.chmod(tmp_name, 0o666 & ~_current_umask())
         os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise
     return path
+
+
+def _current_umask() -> int:
+    mask = os.umask(0)  # the umask can only be read by setting it
+    os.umask(mask)
+    return mask
 
 
 def _reject_json_constant(value: str) -> None:
