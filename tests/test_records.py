@@ -22,6 +22,7 @@ from layer_fusion.contracts import (  # noqa: E402
 from layer_fusion.records import (  # noqa: E402
     RECORD_FORMAT,
     find_lr_selection_record,
+    find_selection_record_for,
     load_result_record,
     load_result_records,
     result_record_to_dict,
@@ -129,6 +130,12 @@ def test_run_id_must_be_a_plain_file_name(diverged_record, tmp_path: Path) -> No
     "mutate, message",
     [
         (lambda d: d.update(record_format=99), "record_format"),
+        (lambda d: d.update(record_format=True), "record_format"),
+        (lambda d: d.update(config=None), "RunConfig"),
+        (lambda d: d.update(eval_error_rate=math.nan), "non-standard JSON constant NaN"),
+        (lambda d: d.update(eval_error_rate=math.inf), "non-standard JSON constant Infinity"),
+        (lambda d: d["config"].update(run_kind=None), "RunKind"),
+        (lambda d: d["config"].update(dataset=None), "DatasetName"),
         (lambda d: d.pop("record_format"), "record_format"),
         (lambda d: d.update(surprise=1), "unknown keys"),
         (lambda d: d.pop("eval_error_rate"), "missing keys"),
@@ -190,3 +197,12 @@ def test_lr_selection_record_must_exist_and_match(diverged_record) -> None:  # t
     wrong_lr = replace(wrong_lr, config=replace(wrong_lr.config, fixed_lr=1e-1 + 1e-9))
     with pytest.raises(ValueError, match="selected_lr"):
         find_lr_selection_record(wrong_lr, [selection])
+
+def test_reuse_cannot_reference_its_own_seed(diverged_record) -> None:  # type: ignore[no-untyped-def]
+    config = replace(
+        diverged_record.config,
+        fixed_lr=diverged_record.selected_lr,
+        lr_selection_seed=diverged_record.config.seed,
+    )
+    with pytest.raises(ValueError, match="own seed"):
+        find_selection_record_for(config, [diverged_record])

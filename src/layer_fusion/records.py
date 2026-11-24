@@ -61,6 +61,8 @@ _RUN_CONFIG_ENUMS: dict[str, type[Enum]] = {
 
 
 def _check_keys(data: dict[str, Any], cls: type, where: str) -> None:
+    if not isinstance(data, dict):
+        raise ValueError(f"{where}: expected a JSON object")
     expected = {f.name for f in fields(cls)}
     unknown = sorted(data.keys() - expected)
     missing = sorted(expected - data.keys())
@@ -88,7 +90,7 @@ def run_config_from_dict(data: dict[str, Any]) -> RunConfig:
     _check_keys(data, RunConfig, "RunConfig")
     values = dict(data)
     for name, enum_cls in _RUN_CONFIG_ENUMS.items():
-        if values[name] is not None:
+        if name != "input_setting" or values[name] is not None:
             values[name] = enum_cls(values[name])
     values["lr_candidates"] = tuple(float(lr) for lr in values["lr_candidates"])
     if values["expected_cache_meta"] is not None:
@@ -148,7 +150,7 @@ def result_record_from_dict(data: dict[str, Any]) -> ResultRecord:
     """Inverse of :func:`result_record_to_dict`; refuses another ``record_format``."""
     values = dict(data)
     record_format = values.pop("record_format", None)
-    if record_format != RECORD_FORMAT:
+    if type(record_format) is not int or record_format != RECORD_FORMAT:
         raise ValueError(
             f"record_format {record_format!r} is not supported (expected {RECORD_FORMAT})"
         )
@@ -213,12 +215,16 @@ def save_result_record(
     return path
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant {value}")
+
+
 def load_result_record(path: str | Path) -> ResultRecord:
     """Read one record file; its name must be ``<run_id>.json``."""
     path = Path(path)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        data = json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_json_constant)
+    except ValueError as exc:
         raise ValueError(f"{path}: not valid JSON ({exc})") from exc
     if not isinstance(data, dict):
         raise ValueError(f"{path}: a result record must be a JSON object")
@@ -267,6 +273,8 @@ def find_selection_record_for(
     """
     if config.fixed_lr is None or config.lr_selection_seed is None:
         raise ValueError(f"{label}: a reuse run needs both fixed_lr and lr_selection_seed")
+    if config.seed == config.lr_selection_seed:
+        raise ValueError(f"{label}: a reuse run cannot reference its own seed")
     matches = [
         r
         for r in records
