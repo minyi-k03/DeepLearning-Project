@@ -6,7 +6,7 @@ Un-skip each test as T-05 / T-06 are implemented (SPEC.md §Seam ①).
 
 import pytest
 
-from layer_fusion.contracts import FusionMethod
+from layer_fusion.contracts import MAIN_FUSION_METHODS, FusionMethod
 
 # Trainable parameters at the real hidden size 768: SPEC literals (SPEC §결정 필요 사항:
 # F4 19,994 / 19,225; B0+ 20,075 / 19,277), not recomputed with the code's formula.
@@ -167,7 +167,7 @@ def test_identical_tuning_budget_across_fusion_methods(
     provider = noisy_provider()
     base = make_run_config(provider)
     params_by_method: dict[FusionMethod, int] = {}
-    for fusion_method in FusionMethod:
+    for fusion_method in MAIN_FUSION_METHODS:
         record = run_experiment(
             make_run_config(provider, fusion_method=fusion_method), provider, device="cpu"
         )

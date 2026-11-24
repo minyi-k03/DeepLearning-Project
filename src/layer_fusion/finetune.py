@@ -78,3 +78,16 @@ class FinetuneModel(nn.Module):
 
     def forward(self, inputs: TokenInputs) -> torch.Tensor:
         return self.head(self.layer_vectors(inputs))
+
+
+class PaperHeadModel(nn.Module):
+    """Reproduction track (T-06e): the paper's sequence-classification model behind the same
+    token-view interface, so ``training.evaluate`` works on it unchanged."""
+
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, inputs: TokenInputs) -> torch.Tensor:
+        ids, attention, _pool_mask = inputs  # the paper head pools with the attention mask
+        return self.model(input_ids=ids, attention_mask=attention).logits

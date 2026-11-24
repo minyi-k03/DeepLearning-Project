@@ -237,11 +237,13 @@ class BackboneProvider:
         self,
         splits: dict[str, Sequence[DocumentRecord]],
         metadata: CacheMetadata,
-        model: Any,
+        model: Any | None,
         tokenizer: Any,
         *,
         limited: bool = False,
     ) -> None:
+        """``model=None`` keeps only the tokenized splits: the reproduction track (T-06e)
+        builds its own paper classification model and never asks for a backbone."""
         from layer_fusion.inputs import build_tokenized_inputs
 
         if metadata.dtype != "float32":
@@ -253,7 +255,7 @@ class BackboneProvider:
                 f"{metadata.attn_implementation!r} (ADR 0005)"
             )
         self._metadata = metadata
-        self._model = model.cpu()
+        self._model = None if model is None else model.cpu()
         self.limited = limited
         self.pad_id = int(tokenizer.pad_token_id)
         self.special_ids = (int(tokenizer.cls_token_id), int(tokenizer.sep_token_id))
@@ -293,6 +295,7 @@ class BackboneProvider:
         *,
         limit: int | None = None,
         data_dir: str | None = None,
+        load_backbone: bool = True,
     ) -> BackboneProvider:
         """Load ``dataset`` and the locked ModernBERT setting of ``env`` (``ExtractionEnv``).
 
@@ -315,8 +318,10 @@ class BackboneProvider:
         if limit is not None:
             splits = {name: sample_records(records, limit) for name, records in splits.items()}
         tokenizer = AutoTokenizer.from_pretrained(env.model_name)
-        model = AutoModel.from_pretrained(
-            env.model_name, attn_implementation=env.attn_implementation
+        model = (
+            AutoModel.from_pretrained(env.model_name, attn_implementation=env.attn_implementation)
+            if load_backbone
+            else None
         )
         return cls(
             splits,
@@ -351,6 +356,9 @@ class BackboneProvider:
     def fresh_model(self) -> Any:
         """A trainable copy of the pretrained backbone (on CPU)."""
         import copy
+
+        if self._model is None:
+            raise RuntimeError("this BackboneProvider was built without a backbone model")
 
         model = copy.deepcopy(self._model)
         model.train()
