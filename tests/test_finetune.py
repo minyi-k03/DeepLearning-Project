@@ -8,6 +8,7 @@ without ModernBERT weights. One test at the end uses the real model when it is c
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 from dataclasses import fields, replace
 from pathlib import Path
@@ -72,6 +73,20 @@ class FakeBackbone(nn.Module):
             h = torch.tanh(h * scale + shift)
             states.append(h)
         return SimpleNamespace(hidden_states=tuple(states))
+
+
+class DropoutBackbone(FakeBackbone):
+    """Fake trainable backbone whose forward pass consumes the torch RNG."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.dropout = nn.Dropout(0.5)
+
+    def forward(self, input_ids, attention_mask, output_hidden_states):  # type: ignore[no-untyped-def]
+        result = super().forward(input_ids, attention_mask, output_hidden_states)
+        return SimpleNamespace(
+            hidden_states=tuple(self.dropout(state) for state in result.hidden_states)
+        )
 
 
 def _records(n: int, split: str, seed: int) -> list[DocumentRecord]:
@@ -190,6 +205,27 @@ def test_fixed_lr_run_trains_one_fresh_backbone() -> None:
                             device="cpu")
     assert len(provider.handed_out) == 1
     assert record.selected_lr == 1e-2 and record.lr_tuning_scores == {}
+
+
+def test_same_seed_finetune_is_independent_of_global_torch_rng_state() -> None:
+    """The run seed controls backbone dropout, not whatever ran before this experiment."""
+    pristine = DropoutBackbone()
+    config = _config(
+        run_kind=RunKind.DEBUG,
+        fixed_lr=1e-2,
+        lr_selection_seed=0,
+        lr_candidates=(1e-2,),
+        epochs=2,
+    )
+
+    torch.manual_seed(111)
+    first = run_experiment(config, _provider(backbone=copy.deepcopy(pristine)), device="cpu")
+    torch.manual_seed(999)
+    second = run_experiment(config, _provider(backbone=copy.deepcopy(pristine)), device="cpu")
+
+    assert second.learning_curve == first.learning_curve
+    assert second.predictions == first.predictions
+    assert second.layer_weights == first.layer_weights
 
 
 # ---------------------------------------------------------------- pooling = extractor rule

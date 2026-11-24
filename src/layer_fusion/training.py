@@ -148,71 +148,77 @@ def train_head(
         raise ValueError(f"lr must be a finite positive number, got {lr}")
     if len(train_view) == 0:
         raise ValueError("cannot train on an empty split")
+
+    # Keep model initialisation and every stochastic forward pass under the run seed.  The
+    # context restores the caller's CPU/CUDA RNG states afterwards, so one experiment neither
+    # depends on nor perturbs the queue activity around it.
     with torch.random.fork_rng(devices=_rng_devices()):
         torch.manual_seed(seed)
         head = make_head()
-    head.to(device)
-    optimizer = make_optimizer(head, lr)
-    shuffle_rng = np.random.default_rng(seed)
+        head.to(device)
+        optimizer = make_optimizer(head, lr)
+        shuffle_rng = np.random.default_rng(seed)
 
-    curve: list[dict[str, float]] = []
-    best_state: dict[str, torch.Tensor] | None = None
-    best_error, best_loss, best_epoch = math.inf, math.inf, 0
-    epochs_without_improvement = 0
-    diverged = False
-    train_seconds = tuning_eval_seconds = 0.0
+        curve: list[dict[str, float]] = []
+        best_state: dict[str, torch.Tensor] | None = None
+        best_error, best_loss, best_epoch = math.inf, math.inf, 0
+        epochs_without_improvement = 0
+        diverged = False
+        train_seconds = tuning_eval_seconds = 0.0
 
-    for epoch in range(1, epochs + 1):
-        _sync(device)
-        start_time = time.perf_counter()
-        head.train()
-        order = shuffle_rng.permutation(len(train_view))
-        train_loss = torch.zeros((), device=device)
-        for start in range(0, len(order), batch_size):
-            rows = np.sort(train_view.rows[order[start : start + batch_size]])
-            x, y = train_view.load(rows, device)
-            optimizer.zero_grad(set_to_none=True)
-            loss = nn.functional.cross_entropy(head(x), y)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.detach() * len(rows)
-        _sync(device)
-        eval_start = time.perf_counter()
-        train_seconds += eval_start - start_time
+        for epoch in range(1, epochs + 1):
+            _sync(device)
+            start_time = time.perf_counter()
+            head.train()
+            order = shuffle_rng.permutation(len(train_view))
+            train_loss = torch.zeros((), device=device)
+            for start in range(0, len(order), batch_size):
+                rows = np.sort(train_view.rows[order[start : start + batch_size]])
+                x, y = train_view.load(rows, device)
+                optimizer.zero_grad(set_to_none=True)
+                loss = nn.functional.cross_entropy(head(x), y)
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.detach() * len(rows)
+            _sync(device)
+            eval_start = time.perf_counter()
+            train_seconds += eval_start - start_time
 
-        tuning_loss, tuning_error, _ = evaluate(head, tuning_view, batch_size, device)
-        tuning_eval_seconds += time.perf_counter() - eval_start  # evaluate() syncs via .item()
-        mean_train_loss = float(train_loss.item()) / len(train_view)
-        curve.append(
-            {
-                "epoch": float(epoch),
-                "train_loss": mean_train_loss,
-                "tuning_loss": tuning_loss,
-                "tuning_error": tuning_error,
-            }
-        )
-        if not (math.isfinite(mean_train_loss) and math.isfinite(tuning_loss)):
-            diverged = True
-            break
-        if (tuning_error, tuning_loss) < (best_error, best_loss):
-            best_error, best_loss, best_epoch = tuning_error, tuning_loss, epoch
-            # Snapshot on the CPU: a finetune model is a whole ModernBERT, and a GPU copy
-            # would double its memory for the whole run.
-            best_state = {k: v.detach().to("cpu", copy=True) for k, v in head.state_dict().items()}
-            epochs_without_improvement = 0
-        else:
-            epochs_without_improvement += 1
-            if epochs_without_improvement >= patience:
+            tuning_loss, tuning_error, _ = evaluate(head, tuning_view, batch_size, device)
+            tuning_eval_seconds += time.perf_counter() - eval_start  # evaluate() syncs via .item()
+            mean_train_loss = float(train_loss.item()) / len(train_view)
+            curve.append(
+                {
+                    "epoch": float(epoch),
+                    "train_loss": mean_train_loss,
+                    "tuning_loss": tuning_loss,
+                    "tuning_error": tuning_error,
+                }
+            )
+            if not (math.isfinite(mean_train_loss) and math.isfinite(tuning_loss)):
+                diverged = True
                 break
+            if (tuning_error, tuning_loss) < (best_error, best_loss):
+                best_error, best_loss, best_epoch = tuning_error, tuning_loss, epoch
+                # Snapshot on the CPU: a finetune model is a whole ModernBERT, and a GPU copy
+                # would double its memory for the whole run.
+                best_state = {
+                    k: v.detach().to("cpu", copy=True) for k, v in head.state_dict().items()
+                }
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+                if epochs_without_improvement >= patience:
+                    break
 
-    if best_state is not None:
-        head.load_state_dict(best_state)
-    return head, TrainOutcome(
-        learning_curve=curve,
-        best_epoch=best_epoch,
-        best_tuning_error=best_error,
-        best_tuning_loss=best_loss,
-        train_seconds=train_seconds,
-        tuning_eval_seconds=tuning_eval_seconds,
-        diverged=diverged,
-    )
+        if best_state is not None:
+            head.load_state_dict(best_state)
+        return head, TrainOutcome(
+            learning_curve=curve,
+            best_epoch=best_epoch,
+            best_tuning_error=best_error,
+            best_tuning_loss=best_loss,
+            train_seconds=train_seconds,
+            tuning_eval_seconds=tuning_eval_seconds,
+            diverged=diverged,
+        )
