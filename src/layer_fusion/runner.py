@@ -357,15 +357,6 @@ def run_experiment(
     )
 
 
-def run_sequential_queue(
-    configs: Sequence[RunConfig],
-    provider_factory: object,
-    output_dir: str,
-) -> list[ResultRecord]:
-    """Run main timed experiments sequentially, one at a time on GPU (ADR 0009)."""
-    raise NotImplementedError("TODO: Implement sequential queue runner (T-06)")
-
-
 def run_reproduction_track(
     dataset: str,
     seeds: Sequence[int],
