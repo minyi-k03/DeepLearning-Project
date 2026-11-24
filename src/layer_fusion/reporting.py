@@ -47,6 +47,18 @@ class _Cell(NamedTuple):
 # seam's one-cell rule is the same, plus fusion_method, which is part of the cell here.
 _SEED_FREE_FIELDS = frozenset({"seed", "fixed_lr", "lr_selection_seed"})
 
+# Every artifact filename generate_report_artifacts can write; an output directory that already
+# contains any of these is refused before writing (AGENTS.md §7: no overwrite or stale leftovers).
+_REPORT_ARTIFACTS = (
+    "summary_table.csv",
+    "length_bucket_table.csv",
+    "view_ratio_table.csv",
+    "layer_weights_table.csv",
+    "hypothesis_table.csv",
+    "learning_curves.png",
+    "layer_weights.png",
+)
+
 _Document = tuple[int | None, LengthBucket | None]  # (token_length, length_bucket)
 
 
@@ -94,11 +106,83 @@ def _documents(record: ResultRecord) -> dict[str, _Document]:
     return documents
 
 
+def _check_learning_rate(key: _Cell, cell: Sequence[ResultRecord]) -> None:
+    """Enforce SPEC's one-selection-run-per-cell and identical reused-LR rule (T-06a).
+
+    Inside one cell, exactly one run selects the learning rate (``config.fixed_lr is None``) and
+    every other seed reuses that exact learning rate while pointing ``lr_selection_seed`` back to
+    that selection run.
+    """
+    selection_runs: list[ResultRecord] = []
+    reuse_runs: list[ResultRecord] = []
+    for record in cell:
+        if not (math.isfinite(record.selected_lr) and record.selected_lr > 0):
+            raise ValueError(
+                f"run {record.run_id!r} of cell {key}: selected_lr must be finite and positive, "
+                f"got {record.selected_lr}"
+            )
+        config = record.config
+        if config.fixed_lr is None:
+            if config.lr_selection_seed is not None:
+                raise ValueError(
+                    f"run {record.run_id!r} of cell {key}: selection run (fixed_lr=None) "
+                    f"cannot set config.lr_selection_seed={config.lr_selection_seed}"
+                )
+            if record.lr_selection_seed not in (None, config.seed):
+                raise ValueError(
+                    f"run {record.run_id!r} of cell {key}: selection run seed {config.seed} "
+                    f"disagrees with record.lr_selection_seed={record.lr_selection_seed}"
+                )
+            selection_runs.append(record)
+        else:
+            if config.lr_selection_seed is None:
+                raise ValueError(
+                    f"run {record.run_id!r} of cell {key}: reuse run (fixed_lr={config.fixed_lr}) "
+                    "must specify config.lr_selection_seed"
+                )
+            if config.lr_selection_seed == config.seed:
+                raise ValueError(
+                    f"run {record.run_id!r} of cell {key}: reuse run lr_selection_seed cannot "
+                    f"reference its own seed {config.seed}"
+                )
+            if record.selected_lr != config.fixed_lr:
+                raise ValueError(
+                    f"run {record.run_id!r} of cell {key}: selected_lr {record.selected_lr} "
+                    f"!= config.fixed_lr {config.fixed_lr}"
+                )
+            if record.lr_selection_seed not in (None, config.lr_selection_seed):
+                raise ValueError(
+                    f"run {record.run_id!r} of cell {key}: record.lr_selection_seed "
+                    f"{record.lr_selection_seed} != config.lr_selection_seed "
+                    f"{config.lr_selection_seed}"
+                )
+            reuse_runs.append(record)
+
+    if len(selection_runs) != 1:
+        raise ValueError(
+            f"cell {key} must have exactly one LR selection run (fixed_lr=None), "
+            f"got {len(selection_runs)}: {[r.run_id for r in selection_runs]}"
+        )
+    selection = selection_runs[0]
+    for record in reuse_runs:
+        if record.config.lr_selection_seed != selection.config.seed:
+            raise ValueError(
+                f"run {record.run_id!r} of cell {key} references lr_selection_seed "
+                f"{record.config.lr_selection_seed}, but the cell's selection run is seed "
+                f"{selection.config.seed} ({selection.run_id!r})"
+            )
+        if record.selected_lr != selection.selected_lr:
+            raise ValueError(
+                f"run {record.run_id!r} of cell {key} used selected_lr={record.selected_lr}, "
+                f"but selection run {selection.run_id!r} chose {selection.selected_lr}"
+            )
+
+
 def _check_cell(key: _Cell, cell: Sequence[ResultRecord]) -> None:
     """Refuse what would make a seed mean +- std lie about the cell.
 
     That is a seed counted twice, a run trained under another setting (epochs, batch size, ...),
-    or seeds evaluated on different documents.
+    mixed learning rates or broken LR-reuse provenance, or seeds evaluated on different documents.
     """
     reference = cell[0]
     reference_docs = _documents(reference)
@@ -123,6 +207,7 @@ def _check_cell(key: _Cell, cell: Sequence[ResultRecord]) -> None:
                 f"runs {reference.run_id!r} and {record.run_id!r} of cell {key}: seeds must be "
                 "evaluated on the same documents (doc ids, token lengths and buckets)"
             )
+    _check_learning_rate(key, cell)
 
 
 def _cells(main_records: Sequence[ResultRecord]) -> dict[_Cell, list[ResultRecord]]:
@@ -392,6 +477,20 @@ def _write_csv(path: Path, rows: Sequence[dict[str, object]]) -> Path:
     return path
 
 
+def _check_output_dir(out: Path) -> None:
+    """Refuse an output directory that already holds report artifacts (AGENTS.md §7)."""
+    if not out.exists():
+        return
+    if not out.is_dir():
+        raise FileExistsError(f"output_dir {out} exists and is not a directory")
+    existing = [name for name in _REPORT_ARTIFACTS if (out / name).exists()]
+    if existing:
+        raise FileExistsError(
+            f"output directory {out} already contains report artifacts {existing}; "
+            "refusing to overwrite or leave stale files (AGENTS.md §7)"
+        )
+
+
 def generate_report_artifacts(
     records: Sequence[ResultRecord],
     judgment: JudgmentReport,
@@ -402,13 +501,13 @@ def generate_report_artifacts(
     """Export result tables, learning curves, layer weight plots, bucket & view ratio tables.
 
     Debug and reproduction records are dropped here, once, before any table or figure is built
-    (ADR 0004, 0009). A table with no rows is not written. ``min_bucket_samples`` is the
-    length-bucket minimum sample rule (TBD until locked).
+    (ADR 0004, 0009). A table with no rows is not written. Existing report artifacts in
+    ``output_dir`` are refused before writing so previous outputs are neither overwritten nor left
+    behind alongside a newer export (AGENTS.md §7). ``min_bucket_samples`` is the length-bucket
+    minimum sample rule (TBD until locked).
     """
     main = select_main_records(records)
     cells = _cells(main)
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
     tables = {
         "summary_table.csv": _summary_rows(cells),
         "length_bucket_table.csv": _length_bucket_rows(cells, min_bucket_samples),
@@ -416,6 +515,12 @@ def generate_report_artifacts(
         "layer_weights_table.csv": _layer_weight_rows(cells),
         "hypothesis_table.csv": _hypothesis_rows(judgment),
     }
+    out = Path(output_dir)
+    _check_output_dir(out)
+    has_curves = any(r.learning_curve for r in main)
+    if not any(tables.values()) and not has_curves:
+        return []
+    out.mkdir(parents=True, exist_ok=True)
     paths = [_write_csv(out / name, rows) for name, rows in tables.items() if rows]
     curves_path = _plot_learning_curves(main, out / "learning_curves.png")
     if curves_path is not None:

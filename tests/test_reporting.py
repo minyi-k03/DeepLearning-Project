@@ -45,7 +45,11 @@ def make_record(
     seconds: float = 10.0,
     run_kind: RunKind = RunKind.MAIN,
     track: TrackKind = TrackKind.MAIN,
+    selected_lr: float = 1e-3,
+    is_selection: bool | None = None,
+    lr_selection_seed: int = 0,
 ) -> ResultRecord:
+    selection = (seed == lr_selection_seed) if is_selection is None else is_selection
     config = RunConfig(
         dataset=dataset,
         data_amount=DataAmount.FULL,
@@ -55,16 +59,19 @@ def make_record(
         input_setting=input_setting,
         run_kind=run_kind,
         track=track,
+        fixed_lr=None if selection else selected_lr,
+        lr_selection_seed=None if selection else lr_selection_seed,
     )
     return ResultRecord(
         run_id=f"{method.value}-{run_kind.value}-{track.value}-s{seed}",
         config=config,
-        selected_lr=1e-3,
-        lr_tuning_scores={1e-3: 0.0},
+        selected_lr=selected_lr,
+        lr_tuning_scores={selected_lr: 0.0} if selection else {},
         eval_error_rate=error_rate,
         predictions=[],
         trainable_params=params,
         train_seconds=seconds,
+        lr_selection_seed=seed if selection else lr_selection_seed,
     )
 
 
@@ -185,13 +192,99 @@ def test_records_trained_under_different_settings_are_not_pooled_into_one_cell()
 def test_seeds_of_one_cell_may_differ_in_the_reused_learning_rate_fields() -> None:
     # SPEC §결정 필요 사항 (T-06a): the first seed selects the LR, the other seeds reuse it.
     records = [
-        make_record(FusionMethod.B0, 0, 0.10),
-        with_config(make_record(FusionMethod.B0, 1, 0.12), fixed_lr=1e-3, lr_selection_seed=0),
+        make_record(FusionMethod.B0, 0, 0.10, selected_lr=1e-3, is_selection=True),
+        make_record(
+            FusionMethod.B0, 1, 0.12, selected_lr=1e-3, is_selection=False, lr_selection_seed=0
+        ),
     ]
 
     rows = generate_summary_table(records)
 
     assert rows[0]["n_seeds"] == 2
+
+
+@pytest.mark.parametrize(
+    "seed_1",
+    [
+        pytest.param(
+            lambda: make_record(FusionMethod.B0, 1, 0.12, selected_lr=1e-2, is_selection=True),
+            id="two-selection-runs-different-lr",
+        ),
+        pytest.param(
+            lambda: make_record(
+                FusionMethod.B0, 1, 0.12, selected_lr=1e-2, is_selection=False, lr_selection_seed=0
+            ),
+            id="reuse-run-different-lr",
+        ),
+        pytest.param(
+            lambda: make_record(FusionMethod.B0, 1, 0.12, selected_lr=1e-3, is_selection=True),
+            id="two-selection-runs-same-lr",
+        ),
+        pytest.param(
+            lambda: make_record(
+                FusionMethod.B0, 1, 0.12, selected_lr=1e-3, is_selection=False, lr_selection_seed=99
+            ),
+            id="reuse-run-wrong-selection-seed",
+        ),
+        pytest.param(
+            lambda: make_record(
+                FusionMethod.B0, 1, 0.12, selected_lr=1e-3, is_selection=False, lr_selection_seed=1
+            ),
+            id="reuse-run-self-reference",
+        ),
+    ],
+)
+def test_inconsistent_learning_rate_or_reuse_provenance_inside_a_cell_is_refused(
+    seed_1: Callable[[], ResultRecord],
+) -> None:
+    records = [make_record(FusionMethod.B0, 0, 0.10, selected_lr=1e-3, is_selection=True), seed_1()]
+
+    with pytest.raises(ValueError, match="lr|selection"):
+        generate_summary_table(records)
+
+
+def test_reuse_run_without_selection_run_in_cell_is_refused() -> None:
+    reuse_only = make_record(
+        FusionMethod.B0, 1, 0.12, selected_lr=1e-3, is_selection=False, lr_selection_seed=0
+    )
+
+    with pytest.raises(ValueError, match="selection"):
+        generate_summary_table([reuse_only])
+
+
+def test_malformed_lr_fields_on_a_single_record_are_refused() -> None:
+    selection_with_config_seed = with_config(
+        make_record(FusionMethod.B0, 0, 0.10, is_selection=True), lr_selection_seed=0
+    )
+    selection_with_wrong_record_seed = make_record(FusionMethod.B0, 0, 0.10, is_selection=True)
+    selection_with_wrong_record_seed.lr_selection_seed = 1
+    reuse_without_config_seed = with_config(
+        make_record(FusionMethod.B0, 1, 0.12, is_selection=False), lr_selection_seed=None
+    )
+    reuse_with_mismatched_selected_lr = make_record(FusionMethod.B0, 1, 0.12, is_selection=False)
+    reuse_with_mismatched_selected_lr.selected_lr = 1e-2
+    reuse_with_mismatched_record_seed = make_record(FusionMethod.B0, 1, 0.12, is_selection=False)
+    reuse_with_mismatched_record_seed.lr_selection_seed = 2
+
+    seed0 = make_record(FusionMethod.B0, 0, 0.10, is_selection=True)
+    for bad in (selection_with_config_seed, selection_with_wrong_record_seed):
+        with pytest.raises(ValueError, match="lr_selection_seed"):
+            generate_summary_table([bad])
+    for bad in (
+        reuse_without_config_seed,
+        reuse_with_mismatched_selected_lr,
+        reuse_with_mismatched_record_seed,
+    ):
+        with pytest.raises(ValueError, match="lr|fixed_lr"):
+            generate_summary_table([seed0, bad])
+
+
+@pytest.mark.parametrize("bad_lr", [0.0, -1e-3, float("nan"), float("inf")])
+def test_non_positive_or_non_finite_selected_lr_is_refused(bad_lr: float) -> None:
+    record = make_record(FusionMethod.B0, 0, 0.10, selected_lr=bad_lr, is_selection=True)
+
+    with pytest.raises(ValueError, match="selected_lr"):
+        generate_summary_table([record])
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
@@ -704,7 +797,7 @@ def test_learning_curve_figure_shows_the_tuning_errors(tmp_path: Path) -> None:
 def test_no_learning_curve_figure_when_only_debug_records_have_curves(tmp_path: Path) -> None:
     debug = make_record(FusionMethod.B0, 0, 0.3, run_kind=RunKind.DEBUG)
     debug.learning_curve = curve(0.5, 0.4)
-    main = make_record(FusionMethod.B0, 1, 0.3)  # main record without a curve
+    main = make_record(FusionMethod.B0, 1, 0.3, is_selection=True)  # main record without a curve
 
     paths = generate_report_artifacts([debug, main], JudgmentReport(judgments={}), tmp_path)
 
@@ -731,3 +824,65 @@ def test_hypothesis_table_copies_the_judgment_report_without_judging_again(
     assert float(rows[0]["mcnemar_p_value"]) == pytest.approx(0.003)
     assert rows[1]["verdict"] == "탐색적(판정 없음)"
     assert rows[1]["mean_diff"] == ""  # exploratory: no number is invented
+
+
+def test_refuses_to_overwrite_existing_summary_csv_and_keeps_original_intact(
+    tmp_path: Path,
+) -> None:
+    first = [make_record(FusionMethod.B0, 0, 0.10)]
+    second = [make_record(FusionMethod.B0, 0, 0.25)]
+    generate_report_artifacts(first, JudgmentReport(judgments={}), tmp_path)
+
+    with pytest.raises(FileExistsError, match="summary_table.csv"):
+        generate_report_artifacts(second, JudgmentReport(judgments={}), tmp_path)
+
+    rows = read_csv(tmp_path / "summary_table.csv")
+    assert float(rows[0]["eval_error_rate_mean"]) == pytest.approx(0.10)
+
+
+def test_refuses_empty_export_when_previous_report_artifacts_exist(tmp_path: Path) -> None:
+    generate_report_artifacts([make_record(FusionMethod.B0, 0, 0.10)], JudgmentReport({}), tmp_path)
+
+    with pytest.raises(FileExistsError, match="summary_table.csv"):
+        generate_report_artifacts([], JudgmentReport(judgments={}), tmp_path)
+
+    rows = read_csv(tmp_path / "summary_table.csv")
+    assert float(rows[0]["eval_error_rate_mean"]) == pytest.approx(0.10)
+
+
+@pytest.mark.parametrize(
+    "existing_name",
+    [
+        "summary_table.csv",
+        "length_bucket_table.csv",
+        "view_ratio_table.csv",
+        "layer_weights_table.csv",
+        "hypothesis_table.csv",
+        "learning_curves.png",
+        "layer_weights.png",
+    ],
+)
+def test_refuses_output_dir_containing_any_existing_report_artifact(
+    tmp_path: Path, existing_name: str
+) -> None:
+    existing = tmp_path / existing_name
+    existing.write_bytes(b"existing-artifact")
+
+    with pytest.raises(FileExistsError, match=existing_name):
+        generate_report_artifacts(
+            [make_record(FusionMethod.B0, 0, 0.10)], JudgmentReport(judgments={}), tmp_path
+        )
+
+    assert existing.read_bytes() == b"existing-artifact"
+    if existing_name != "summary_table.csv":
+        assert not (tmp_path / "summary_table.csv").exists()
+
+
+def test_refuses_when_output_dir_is_an_existing_file(tmp_path: Path) -> None:
+    file_path = tmp_path / "report_file"
+    file_path.write_text("not a dir", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        generate_report_artifacts(
+            [make_record(FusionMethod.B0, 0, 0.10)], JudgmentReport(judgments={}), file_path
+        )
