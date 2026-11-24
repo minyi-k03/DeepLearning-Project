@@ -41,7 +41,10 @@ MNLI_GENRES = frozenset({"matched", "mismatched"})
 
 
 def make_run_id(config: RunConfig) -> str:
-    """Deterministic run id built from the setting (T-06b may add a timestamp to file names).
+    """Deterministic run id built from the setting; also the record file name (T-06b).
+
+    No timestamp is added: one setting + seed + run kind is one record file, so a finished
+    run is found by name and is never silently run twice (``records.save_result_record``).
 
     Reproduction-track ids start with ``repro-`` so they never collide with main-track ids.
     """
@@ -352,15 +355,6 @@ def run_experiment(
         lr_search_seconds=lr_search_seconds,
         tuning_eval_seconds=outcome.tuning_eval_seconds,
     )
-
-
-def run_sequential_queue(
-    configs: Sequence[RunConfig],
-    provider_factory: object,
-    output_dir: str,
-) -> list[ResultRecord]:
-    """Run main timed experiments sequentially, one at a time on GPU (ADR 0009)."""
-    raise NotImplementedError("TODO: Implement sequential queue runner (T-06)")
 
 
 def run_reproduction_track(
