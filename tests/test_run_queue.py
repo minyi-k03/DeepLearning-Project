@@ -246,6 +246,48 @@ def test_resume_takes_the_lr_from_the_selection_record_on_disk(tmp_path: Path) -
     assert [(c.seed, c.fixed_lr, c.lr_selection_seed) for c in run.seen] == [(1, 1e-3, 0)]
 
 
+def test_a_record_made_under_another_budget_is_refused_not_skipped(tmp_path: Path) -> None:
+    """The run id leaves the budget out, so the file name alone cannot tell budgets apart."""
+    out = tmp_path / "runs"
+    _queue([_config(seed=0)], out, tmp_path / "l")
+    before = {p: p.read_bytes() for p in out.glob("*.json")}
+    run = FakeRun()
+    with pytest.raises(QueueRunError) as info:
+        _queue([_config(seed=0, epochs=3)], out, tmp_path / "l", run)
+    assert "epochs" in str(info.value.__cause__)
+    assert run.seen == []
+    assert {p: p.read_bytes() for p in out.glob("*.json")} == before  # never overwritten
+
+
+def test_reuse_seed_refuses_a_selection_record_from_another_budget(tmp_path: Path) -> None:
+    out = tmp_path / "runs"
+    _queue([_config(seed=0)], out, tmp_path / "l")
+    run = FakeRun()
+    with pytest.raises(QueueRunError) as info:
+        _queue([_config(seed=s, batch_size=16) for s in (0, 1)], out, tmp_path / "l", run)
+    assert "batch_size" in str(info.value.__cause__)
+    assert run.seen == []
+
+
+def test_default_lock_file_does_not_depend_on_the_working_directory() -> None:
+    from layer_fusion.run_queue import DEFAULT_LOCK_PATH
+
+    assert DEFAULT_LOCK_PATH.is_absolute()
+    assert DEFAULT_LOCK_PATH == ROOT / "results" / "main_queue.lock"
+
+
+def test_refusal_names_the_absolute_lock_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative --lock-file is reported as the absolute file both queues contend for."""
+    monkeypatch.chdir(tmp_path)
+    with main_queue_lock("q.lock"):
+        with pytest.raises(MainQueueLockedError) as info:
+            with main_queue_lock("q.lock"):
+                pass
+    assert str((tmp_path / "q.lock").resolve()) in str(info.value)
+
+
 def test_first_failure_stops_the_queue_and_keeps_finished_records(tmp_path: Path) -> None:
     out = tmp_path / "runs"
     configs = [_config(fusion_method=m) for m in (FusionMethod.B0, FusionMethod.F1,

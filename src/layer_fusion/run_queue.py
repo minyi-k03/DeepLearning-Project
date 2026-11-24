@@ -23,7 +23,7 @@ import socket
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import IO, Any
 
@@ -37,7 +37,14 @@ from layer_fusion.records import (
 )
 
 DATASET_PRIORITY = (DatasetName.MNLI, DatasetName.SST2, DatasetName.IMDB)
-DEFAULT_LOCK_PATH = Path("results/main_queue.lock")
+# Anchored at the repository root, not the working directory: two main queues started from
+# different folders must still see the same lock file (T-06c completion criterion).
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LOCK_PATH = REPO_ROOT / "results" / "main_queue.lock"
+# Windows locks a byte range and refuses reads of it; the holder line lives at the start of
+# the file, so the locked byte sits far past it and a refused process can still read who
+# holds the lock. POSIX flock locks the whole file and ignores this offset.
+_WINDOWS_LOCK_OFFSET = 1 << 20
 
 RunFn = Callable[[RunConfig, Any], ResultRecord]
 ProviderFactory = Callable[[RunConfig], Any]
@@ -76,7 +83,7 @@ def _try_lock(handle: IO[str]) -> bool:
     if os.name == "nt":
         import msvcrt
 
-        handle.seek(0)
+        handle.seek(_WINDOWS_LOCK_OFFSET)
         try:
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError:
@@ -95,7 +102,7 @@ def _unlock(handle: IO[str]) -> None:
     if os.name == "nt":
         import msvcrt
 
-        handle.seek(0)
+        handle.seek(_WINDOWS_LOCK_OFFSET)
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
     else:
         import fcntl
@@ -110,8 +117,9 @@ def main_queue_lock(path: str | Path = DEFAULT_LOCK_PATH) -> Iterator[None]:
     An OS lock (``flock`` / ``msvcrt.locking``) is released by the OS when the process dies,
     so a crashed queue never leaves a stale lock to be deleted by hand. The file keeps the
     holder's pid, host and start time for the error message; it is not deleted on exit.
+    A relative ``path`` is resolved against the working directory once, here.
     """
-    lock_path = Path(path)
+    lock_path = Path(path).resolve()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     # "a+" never truncates, so a refused process cannot wipe the holder's details.
     handle = open(lock_path, "a+", encoding="utf-8")  # noqa: SIM115 - held across the yield
@@ -225,25 +233,28 @@ def _run_all(
     log: Callable[[str], None],
 ) -> QueueResult:
     selections = _selection_seeds(ordered)
-    chosen: list[ResultRecord] = []  # selection records seen so far (disk or this queue)
+    selection_records: list[ResultRecord] = []  # seen so far, from disk or this queue
     result = QueueResult()
     total = len(ordered)
     for index, config in enumerate(ordered, start=1):
         selection = next(s for s in selections if same_setting(s, config))
-        if config.seed != selection.seed:
-            config = with_selected_lr(config, _selection_record(selection, chosen, output_dir,
-                                                                run_id_of))
         run_id = run_id_of(config)
-        path = record_path(output_dir, run_id)
-        if path.exists():
-            log(f"[queue {index}/{total}] skip {run_id} (record exists)")
-            result.skipped.append(run_id)
-            if config.seed == selection.seed:
-                chosen.append(load_result_record(path))
-            continue
-        log(f"[queue {index}/{total}] run {run_id}")
-        started = time.perf_counter()
         try:
+            if config.seed != selection.seed:
+                config = with_selected_lr(
+                    config, _selection_record(selection, selection_records, output_dir, run_id_of)
+                )
+            run_id = run_id_of(config)
+            path = record_path(output_dir, run_id)
+            if path.exists():
+                existing = _matching_record(path, config)
+                log(f"[queue {index}/{total}] skip {run_id} (record exists)")
+                result.skipped.append(run_id)
+                if config.seed == selection.seed:
+                    selection_records.append(existing)
+                continue
+            log(f"[queue {index}/{total}] run {run_id}")
+            started = time.perf_counter()
             record = run(config, provider_factory(config))
             save_result_record(record, output_dir)
         except Exception as exc:
@@ -253,7 +264,7 @@ def _run_all(
         result.completed.append(run_id)
         result.seconds[run_id] = seconds
         if config.seed == selection.seed:
-            chosen.append(record)
+            selection_records.append(record)
         log(
             f"[queue {index}/{total}] done {run_id}: eval error {record.eval_error_rate:.4f}, "
             f"lr {record.selected_lr:g}, {seconds:.1f}s"
@@ -261,14 +272,35 @@ def _run_all(
     return result
 
 
+def _matching_record(path: Path, config: RunConfig) -> ResultRecord:
+    """The record at ``path``, which must have been made with exactly ``config``.
+
+    The run id leaves out the tuning budget and the expected cache metadata, so a record from
+    an earlier budget has the same file name; skipping it silently would mix budgets in one
+    results table. Such a record is refused instead of skipped (it is never overwritten).
+    """
+    existing = load_result_record(path)
+    if existing.config != config:
+        differing = [
+            f.name
+            for f in fields(RunConfig)
+            if getattr(existing.config, f.name) != getattr(config, f.name)
+        ]
+        raise ValueError(
+            f"{path} exists but was made with another config (differs in {differing}); "
+            "move it aside or use another --output-dir"
+        )
+    return existing
+
+
 def _selection_record(
     selection: RunConfig,
-    chosen: list[ResultRecord],
+    selection_records: list[ResultRecord],
     output_dir: Path,
     run_id_of: RunIdFn,
 ) -> ResultRecord:
     """The record of ``selection``: run earlier in this queue, or found on disk."""
-    for record in chosen:
+    for record in selection_records:
         if record.config == selection:
             return record
     path = record_path(output_dir, run_id_of(selection))
@@ -277,8 +309,8 @@ def _selection_record(
             f"selection-run record {path} is missing: seed {selection.seed} of this setting "
             "must run before the seeds that reuse its LR"
         )
-    record = load_result_record(path)
-    chosen.append(record)
+    record = _matching_record(path, selection)
+    selection_records.append(record)
     return record
 
 
