@@ -5,9 +5,9 @@ Rules (SPEC §결정 필요 사항, T-06a):
   the learning rate). The eval split is never seen here.
 - Early stopping compares (tuning error rate, tuning loss) lexicographically, the same order as
   the LR tie-break; the head is restored to its best epoch.
-- Optimizer ``torch.optim.AdamW``; weight decay ``WEIGHT_DECAY`` only on weight matrices
-  (ndim >= 2), none on biases or F2 layer logits (which would pull F2 towards uniform = F1).
-  Cross-entropy loss.
+- Optimizer ``torch.optim.AdamW``; weight decay ``WEIGHT_DECAY`` only on non-excluded weight
+  matrices (ndim >= 2), none on biases or layer-weighting parameters (F2 layer logits, F4 gate
+  weight/bias) so decay does not pull F2/F4 towards uniform or static weights. Cross-entropy loss.
 - An epoch whose training or tuning loss is not finite marks the run as diverged; it stops there
   and that epoch never becomes the best state.
 - Head initialisation and shuffling both derive from ``seed`` without touching the global (CPU or
@@ -84,11 +84,16 @@ def _rng_devices() -> list[int]:
 
 
 def make_optimizer(head: nn.Module, lr: float) -> torch.optim.Optimizer:
-    """AdamW with weight decay on weight matrices only (same rule for every fusion method)."""
+    """AdamW with weight decay on non-excluded 2D+ weight matrices (role-based rule)."""
+    from layer_fusion.fusion import no_weight_decay_parameters
+
+    no_decay_ids = {id(p) for p in no_weight_decay_parameters(head)}
     params = [p for p in head.parameters() if p.requires_grad]
+    decayed = [p for p in params if p.ndim >= 2 and id(p) not in no_decay_ids]
+    undecayed = [p for p in params if p.ndim < 2 or id(p) in no_decay_ids]
     groups = [
-        {"params": [p for p in params if p.ndim >= 2], "weight_decay": WEIGHT_DECAY},
-        {"params": [p for p in params if p.ndim < 2], "weight_decay": 0.0},
+        {"params": decayed, "weight_decay": WEIGHT_DECAY},
+        {"params": undecayed, "weight_decay": 0.0},
     ]
     return torch.optim.AdamW([g for g in groups if g["params"]], lr=lr)
 
