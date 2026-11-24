@@ -10,8 +10,10 @@ Debug run (no lock, recorded as debug; what the paper does not state goes on the
     python scripts/run_reproduction.py --debug --datasets mnli --seeds 0 --limit 2000 \\
         --batch-size 32 --warmup-ratio 0.06 --lr-scheduler linear
 
-Records go to ``results/repro`` (separate from the main runs). An existing record is skipped
-only when it was made with the same config; the first failing run stops the command.
+Records go to ``results/repro`` (separate from the main runs); a debug ``--limit N`` sample
+writes under ``results/repro/limitN`` so samples of different sizes never pass for each other
+on resume. An existing record is skipped only when it was made with the same config; the first
+failing run stops the command. Each result is printed next to the paper's error rate.
 """
 
 from __future__ import annotations
@@ -28,10 +30,9 @@ from layer_fusion.reproduction import (
     REPRODUCTION_DATASETS,
     ReproductionOverrides,
     expand_reproduction,
+    paper_error_rates,
 )
 from layer_fusion.run_queue import DEFAULT_LOCK_PATH, MainQueueLockedError, main_queue_lock
-
-DEBUG_ONLY = ("seeds", "batch_size", "warmup_ratio", "lr_scheduler", "limit")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -57,12 +58,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def build_configs(args: argparse.Namespace) -> list[RunConfig]:
     run_kind = RunKind.DEBUG if args.debug else RunKind.MAIN
-    if run_kind is RunKind.MAIN:
-        given = ["--" + n.replace("_", "-") for n in DEBUG_ONLY if getattr(args, n) is not None]
-        if given:
-            raise ValueError(
-                f"{given} are debug-only; main runs take the locked values (AGENTS.md §2)"
-            )
+    if run_kind is RunKind.MAIN and args.limit is not None:
+        raise ValueError("--limit is debug-only: a sample cannot make a main record")
+    # Seeds and the unstated values are refused for main runs inside expand_reproduction.
     return expand_reproduction(
         args.matrix,
         args.env_config,
@@ -87,6 +85,16 @@ def make_provider(dataset: DatasetName, args: argparse.Namespace):  # type: igno
     )
 
 
+def _versus_paper(record, paper: dict[DatasetName, float]) -> str:  # type: ignore[no-untyped-def]
+    """Our error rate(s) next to the published one (US 45). MNLI shows matched and the
+    combined matched+mismatched rate: which one the paper reports is not stated (TBD)."""
+    text = f"eval error {record.eval_error_rate:.4f}"
+    if record.eval_error_rate_matched is not None:
+        text += f" (matched {record.eval_error_rate_matched:.4f})"
+    published = paper.get(record.config.dataset)
+    return text if published is None else f"{text} vs paper {published:.4f}"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
@@ -99,6 +107,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     from layer_fusion.runner import make_run_id
 
     out = Path(args.output_dir)
+    if args.limit is not None:
+        out = out / f"limit{args.limit}"  # the sample size is not part of the RunConfig
+    paper = paper_error_rates(args.matrix)
     kind = configs[0].run_kind.value
     if args.dry_run:
         print(f"[repro] {kind}, {len(configs)} runs (dry run, nothing started):")
@@ -129,10 +140,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"error: {run_id} failed ({type(exc).__name__}: {exc}); fix it and rerun "
                         "(finished records are skipped)"
                     ) from exc
-                print(
-                    f"[repro] {run_id}: eval error {record.eval_error_rate:.4f}, "
-                    f"train {record.train_seconds:.1f}s -> {path}"
-                )
+                print(f"[repro] {run_id}: {_versus_paper(record, paper)}, "
+                      f"train {record.train_seconds:.1f}s -> {path}")
     except MainQueueLockedError as exc:
         raise SystemExit(f"error: {exc}") from exc
     return 0

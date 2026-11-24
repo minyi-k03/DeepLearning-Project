@@ -22,7 +22,7 @@ import argparse
 import sys
 from collections.abc import Sequence
 
-from layer_fusion.contracts import FusionMethod, RunConfig, RunKind
+from layer_fusion.contracts import MAIN_FUSION_METHODS, FusionMethod, RunConfig, RunKind
 from layer_fusion.matrix import TrainingBudget, expand_experiment_matrix
 from layer_fusion.records import record_path
 from layer_fusion.run_queue import (
@@ -69,7 +69,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--fusion-methods",
         nargs="+",
         default=None,
-        choices=[m.value for m in FusionMethod],
+        choices=[m.value for m in MAIN_FUSION_METHODS],
         help="keep only these fusion methods of the selected experiments",
     )
     debug.add_argument("--lr-candidates", type=float, nargs="+", default=None)

@@ -42,12 +42,15 @@ from layer_fusion.contracts import (
 
 REPRODUCTION_DATASETS = (DatasetName.MNLI, DatasetName.SST2)  # ADR 0004
 PAPER_VALUES = ("lr", "weight_decay", "epochs")
-UNSTATED_VALUES = ("batch_size", "warmup_ratio", "lr_scheduler")
 
 
 @dataclass(frozen=True)
 class ReproductionOverrides:
-    """Debug-only values for what the paper does not state; ``None`` = take the config."""
+    """Debug-only values for what the paper does not state; ``None`` = take the config.
+
+    Its fields are the single list of unstated values (``UNSTATED_VALUES``); the CLI derives
+    its debug-only flags from it.
+    """
 
     batch_size: int | None = None
     warmup_ratio: float | None = None
@@ -55,6 +58,36 @@ class ReproductionOverrides:
 
     def is_empty(self) -> bool:
         return all(getattr(self, f.name) is None for f in fields(self))
+
+
+UNSTATED_VALUES = tuple(f.name for f in fields(ReproductionOverrides))
+
+
+def _check_dataset(dataset: DatasetName) -> None:
+    if dataset not in REPRODUCTION_DATASETS:
+        raise ValueError(f"the reproduction track covers MNLI and SST-2 only, got {dataset}")
+
+
+def _check_scheduler(name: str) -> None:
+    """Refuse an unknown scheduler while checking the config, before a model is built or the
+    GPU lock is taken. Skipped when transformers (and torch) is not installed."""
+    try:
+        from transformers import SchedulerType
+    except ImportError:
+        return
+    known = sorted(s.value for s in SchedulerType)
+    if name not in known:
+        raise ValueError(f"lr_scheduler {name!r} is not a transformers scheduler: {known}")
+
+
+def paper_error_rates(matrix_path: str | Path) -> dict[DatasetName, float]:
+    """Published error rates (``paper_reported_error_rate``, %) per dataset, as fractions, so
+    a reproduction result can be printed next to the paper's number (T-08c)."""
+    matrix = yaml.safe_load(Path(matrix_path).read_text(encoding="utf-8"))
+    return {
+        DatasetName(e["dataset"]): float(e["paper_reported_error_rate"]) / 100
+        for e in matrix.get("reproduction_track") or []
+    }
 
 
 # ---------------------------------------------------------------- configs
@@ -87,9 +120,8 @@ def expand_reproduction(
     matrix = yaml.safe_load(Path(matrix_path).read_text(encoding="utf-8"))
     entries = matrix.get("reproduction_track") or []
     wanted = REPRODUCTION_DATASETS if datasets is None else tuple(datasets)
-    unknown = [d for d in wanted if d not in REPRODUCTION_DATASETS]
-    if unknown:
-        raise ValueError(f"the reproduction track covers MNLI and SST-2 only, got {unknown}")
+    for dataset in wanted:
+        _check_dataset(dataset)
     selected = [e for e in entries if DatasetName(e["dataset"]) in wanted]
     selected.sort(key=lambda e: REPRODUCTION_DATASETS.index(DatasetName(e["dataset"])))
     if not selected:
@@ -151,8 +183,7 @@ def check_reproduction_config(config: RunConfig) -> None:
     wrong = {k: getattr(config, k) for k, v in expected.items() if getattr(config, k) is not v}
     if wrong:
         raise ValueError(f"not a reproduction-track config (ADR 0004): {wrong}")
-    if config.dataset not in REPRODUCTION_DATASETS:
-        raise ValueError(f"the reproduction track covers MNLI and SST-2 only, got {config.dataset}")
+    _check_dataset(config.dataset)
     settings = config.reproduction
     if settings is None:
         raise ValueError("reproduction runs need RunConfig.reproduction (paper settings)")
@@ -169,6 +200,7 @@ def check_reproduction_config(config: RunConfig) -> None:
         raise ValueError(f"weight_decay must be >= 0, got {settings.weight_decay}")
     if not 0 <= settings.warmup_ratio < 1:
         raise ValueError(f"warmup_ratio must be in [0, 1), got {settings.warmup_ratio}")
+    _check_scheduler(settings.lr_scheduler)
     if config.input_setting is not None:
         raise ValueError("reproduction runs use the untruncated MNLI / SST-2 input")
 

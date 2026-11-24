@@ -259,6 +259,30 @@ def test_incomplete_or_foreign_configs_are_refused(change, match) -> None:  # ty
     assert factory.models == []  # refused before building a model
 
 
+def test_unknown_scheduler_is_refused_before_any_model_or_lock(tmp_path: Path) -> None:
+    factory = Factory()
+    bad = replace(SETTINGS, lr_scheduler="linaer")
+    with pytest.raises(ValueError, match="not a transformers scheduler"):
+        run_reproduction(_config(reproduction=bad), _provider(), device="cpu",
+                         model_factory=factory)
+    assert factory.models == []
+    with pytest.raises(ValueError, match="not a transformers scheduler"):
+        expand_reproduction(MATRIX, ENV_PATH, seeds=[0], run_kind=RunKind.DEBUG,
+                            overrides=ReproductionOverrides(batch_size=8, warmup_ratio=0.0,
+                                                            lr_scheduler="linaer"))
+
+
+def test_main_track_clis_do_not_offer_paper_head() -> None:
+    for script, flag in (("run_queue.py", "--fusion-methods"), ("run_experiment.py", "--fusion")):
+        spec = importlib.util.spec_from_file_location(f"cli_{script}", ROOT / "scripts" / script)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        args = ["--dataset", "mnli", "--seed", "0"] if script == "run_experiment.py" else []
+        with pytest.raises(SystemExit):
+            module.parse_args([*args, flag, "paper_head"])
+
+
 def test_a_limited_sample_cannot_make_a_main_record() -> None:
     with pytest.raises(CacheConfigMismatchError, match="debug runs only"):
         run_reproduction(_config(), _provider(limited=True), device="cpu",
@@ -322,12 +346,16 @@ def fake_backends(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(reproduction, "default_model_factory", lambda provider: Factory())
 
 
-def test_cli_debug_run_writes_a_record_without_the_lock(tmp_path: Path, fake_backends) -> None:  # type: ignore[no-untyped-def]
+def test_cli_debug_run_writes_a_record_without_the_lock(  # type: ignore[no-untyped-def]
+    tmp_path: Path, fake_backends, capsys
+) -> None:
     lock = tmp_path / "main_queue.lock"
     out = tmp_path / "repro"
     args = [*DEBUG_ARGS, "--limit", "64", "--output-dir", str(out), "--lock-file", str(lock)]
     assert cli.main(args) == 0
-    [path] = out.glob("*.json")
+    [path] = (out / "limit64").glob("*.json")  # a sample never shares a folder with others
+    printed = capsys.readouterr().out
+    assert "(matched " in printed and "vs paper 0.1090" in printed  # US 45: next to 10.9%
     record = load_result_record(path)
     assert record.config.track is TrackKind.REPRODUCTION
     assert record.config.run_kind is RunKind.DEBUG
@@ -343,8 +371,20 @@ def test_cli_main_run_is_refused_while_values_are_tbd(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="TBD"):
         cli.main(["--output-dir", str(tmp_path / "repro"), "--lock-file", str(lock)])
     assert not lock.exists()
-    with pytest.raises(SystemExit, match="debug-only"):
+    with pytest.raises(SystemExit, match="debug runs only"):
         cli.main(["--seeds", "0", "--output-dir", str(tmp_path / "repro")])
+    with pytest.raises(SystemExit, match="debug-only"):
+        cli.main(["--limit", "5", "--output-dir", str(tmp_path / "repro")])
+
+
+def test_cli_samples_of_different_sizes_do_not_resume_each_other(  # type: ignore[no-untyped-def]
+    tmp_path: Path, fake_backends
+) -> None:
+    out = tmp_path / "repro"
+    for limit in ("64", "32"):
+        assert cli.main([*DEBUG_ARGS, "--limit", limit, "--output-dir", str(out)]) == 0
+    assert len(list((out / "limit64").glob("*.json"))) == 1
+    assert len(list((out / "limit32").glob("*.json"))) == 1  # ran, not skipped as "same"
 
 
 def test_cli_dry_run_lists_runs(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]

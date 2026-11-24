@@ -83,7 +83,7 @@ def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
             value = list(value)
         elif f.name == "expected_cache_meta" and value is not None:
             value = cache_metadata_to_dict(value)
-        elif f.name == "reproduction" and value is not None:
+        elif f.name == _ADDED_RUN_CONFIG_FIELD and value is not None:
             value = asdict(value)
         data[f.name] = value
     return data
@@ -95,19 +95,20 @@ def run_config_from_dict(data: dict[str, Any]) -> RunConfig:
     ``reproduction`` was added after record format 1 was first written (T-06e); a record
     without it is a main-track record and reads as ``None``.
     """
-    values = dict(data) if isinstance(data, dict) else data
-    if isinstance(values, dict):
-        values.setdefault(_ADDED_RUN_CONFIG_FIELD, None)
-    _check_keys(values, RunConfig, "RunConfig")
+    if isinstance(data, dict):
+        data = {_ADDED_RUN_CONFIG_FIELD: None, **data}
+    _check_keys(data, RunConfig, "RunConfig")
+    values = dict(data)
     for name, enum_cls in _RUN_CONFIG_ENUMS.items():
         if name != "input_setting" or values[name] is not None:
             values[name] = enum_cls(values[name])
     values["lr_candidates"] = tuple(float(lr) for lr in values["lr_candidates"])
     if values["expected_cache_meta"] is not None:
         values["expected_cache_meta"] = cache_metadata_from_dict(values["expected_cache_meta"])
-    if values["reproduction"] is not None:
-        _check_keys(values["reproduction"], ReproductionSettings, "RunConfig.reproduction")
-        values["reproduction"] = ReproductionSettings(**values["reproduction"])
+    settings = values[_ADDED_RUN_CONFIG_FIELD]
+    if settings is not None:
+        _check_keys(settings, ReproductionSettings, "RunConfig.reproduction")
+        values[_ADDED_RUN_CONFIG_FIELD] = ReproductionSettings(**settings)
     return RunConfig(**values)
 
 
