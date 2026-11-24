@@ -210,21 +210,51 @@ def test_train_head_rejects_empty_budget(noisy_provider) -> None:  # type: ignor
 
 
 def test_optimizer_decays_weight_matrices_only() -> None:
-    """Decay on F2 layer logits would pull F2 towards uniform weights (= F1); biases neither."""
+    """Role-based decay: layer-weighting params (F2 logits, F4 gate) and biases get 0.0."""
     from layer_fusion.fusion import build_fusion_head
     from layer_fusion.training import WEIGHT_DECAY, make_optimizer
 
-    head = build_fusion_head(FusionMethod.F2, 3)
-    decay_of = {
-        id(p): group["weight_decay"]
-        for group in make_optimizer(head, 1e-3).param_groups
-        for p in group["params"]
+    def decay_map(module: torch.nn.Module) -> dict[str, float]:
+        by_id = {
+            id(p): group["weight_decay"]
+            for group in make_optimizer(module, 1e-3).param_groups
+            for p in group["params"]
+        }
+        named = dict(module.named_parameters())
+        assert len(by_id) == len(named)
+        return {name: by_id[id(param)] for name, param in named.items()}
+
+    assert decay_map(build_fusion_head(FusionMethod.F2, 3)) == {
+        "classifier.weight": WEIGHT_DECAY,
+        "classifier.bias": 0.0,
+        "layer_logits": 0.0,
     }
-    named = dict(head.named_parameters())
-    assert len(decay_of) == len(named)
-    assert decay_of[id(named["classifier.weight"])] == WEIGHT_DECAY
-    assert decay_of[id(named["classifier.bias"])] == 0.0
-    assert decay_of[id(named["layer_logits"])] == 0.0
+    assert decay_map(build_fusion_head(FusionMethod.F4, 3)) == {
+        "classifier.weight": WEIGHT_DECAY,
+        "classifier.bias": 0.0,
+        "gate.weight": 0.0,
+        "gate.bias": 0.0,
+    }
+    assert decay_map(build_fusion_head(FusionMethod.B0_PLUS, 3)) == {
+        "mlp_in.weight": WEIGHT_DECAY,
+        "mlp_in.bias": 0.0,
+        "classifier.weight": WEIGHT_DECAY,
+        "classifier.bias": 0.0,
+    }
+
+    # Wrapper modules (e.g. FinetuneModel(backbone, head)) inherit the same role-based rule.
+    class _Wrapper(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.backbone = torch.nn.Linear(4, 4)
+            self.head = build_fusion_head(FusionMethod.F4, 3, hidden_size=4)
+
+    wrapper_decay = decay_map(_Wrapper())
+    assert wrapper_decay["backbone.weight"] == WEIGHT_DECAY
+    assert wrapper_decay["backbone.bias"] == 0.0
+    assert wrapper_decay["head.classifier.weight"] == WEIGHT_DECAY
+    assert wrapper_decay["head.gate.weight"] == 0.0
+    assert wrapper_decay["head.gate.bias"] == 0.0
 
 
 def test_diverged_candidate_is_excluded_from_selection(noisy_provider, make_run_config) -> None:  # type: ignore[no-untyped-def]
