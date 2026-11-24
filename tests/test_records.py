@@ -92,8 +92,6 @@ def test_reloaded_debug_records_are_kept_out_of_judgment(diverged_record, tmp_pa
     assert {r.run_id for r in loaded} == {diverged_record.run_id, "debug-run"}
     reloaded_debug = next(r for r in loaded if r.run_id == "debug-run")
     assert reloaded_debug.config.run_kind is RunKind.DEBUG  # judgment filters with `is`
-    if not hasattr(judgment, "select_main_records"):
-        pytest.skip("judgment.select_main_records arrives with T-07b (PR #17)")
     assert [r.run_id for r in judgment.select_main_records(loaded)] == [diverged_record.run_id]
 
 
