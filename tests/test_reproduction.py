@@ -420,8 +420,9 @@ def test_cli_debug_run_writes_a_record_without_the_lock(  # type: ignore[no-unty
     assert cli.main(args) == 0
     [path] = (out / "limit64").glob("*.json")  # a sample never shares a folder with others
     printed = capsys.readouterr().out
-    assert "(matched " in printed and "vs paper 0.1090" in printed  # US 45: next to 10.9%
     record = load_result_record(path)
+    assert f"matched {record.eval_error_rate_matched:.4f} vs paper 0.1090" in printed
+    assert f"mismatched {record.eval_error_rate_mismatched:.4f}" in printed
     assert record.config.track is TrackKind.REPRODUCTION
     assert record.config.run_kind is RunKind.DEBUG
     assert record.config.lr_candidates == (5e-5,)  # the paper value, not an override
