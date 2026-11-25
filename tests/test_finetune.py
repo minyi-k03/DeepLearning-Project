@@ -407,3 +407,53 @@ def test_finetune_optimizer_keeps_the_role_based_decay_rule() -> None:
     assert decay_of[id(gate[0].weight)] == 0.0 and decay_of[id(gate[0].bias)] == 0.0
     assert decay_of[id(model.backbone.embed.weight)] == 0.01
     assert all(decay_of[id(p)] == 0.0 for p in model.parameters() if p.ndim < 2)
+
+
+# ---------------------------------------------------------------- F4 per-document weights
+
+
+class CountingBackbone(FakeBackbone):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def forward(self, input_ids, attention_mask, output_hidden_states):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        return super().forward(input_ids, attention_mask, output_hidden_states)
+
+
+def test_finetune_eval_gets_f4_weights_from_the_same_backbone_pass() -> None:
+    from layer_fusion.fusion import extract_document_layer_weights
+    from layer_fusion.training import evaluate, evaluate_with_layer_weights
+
+    provider = _provider()
+    backbone = CountingBackbone()
+    head = build_fusion_head(FusionMethod.F4, 3)
+    with torch.no_grad():
+        head.gate.weight.normal_(generator=torch.Generator().manual_seed(0))
+    model = FinetuneModel(backbone, head)
+    rows = [5, 0, 17, 3, 29, 11, 8]
+    view = _view(provider, rows)
+    device = torch.device("cpu")
+
+    _, error, predicted, weights = evaluate_with_layer_weights(model, view, 3, device)
+    assert backbone.calls == 3  # one backbone pass per eval batch, not a second pass
+
+    with torch.no_grad():
+        vectors = model.layer_vectors(view.load(np.asarray(rows), device)[0])
+    expected = extract_document_layer_weights(head, vectors)
+    np.testing.assert_allclose(np.asarray(weights), np.asarray(expected), rtol=1e-5, atol=1e-6)
+    _, plain_error, plain_predicted = evaluate(model, view, 3, device)
+    assert error == plain_error
+    np.testing.assert_array_equal(predicted, plain_predicted)
+
+
+def test_finetune_f4_record_carries_per_document_layer_weights() -> None:
+    provider = _provider()
+    record = run_experiment(
+        _config(fusion_method=FusionMethod.F4), provider, device="cpu"
+    )
+    weights = np.asarray([p.layer_weights for p in record.predictions])
+    assert weights.shape == (30, NUM_LAYER_VECTORS)
+    np.testing.assert_allclose(weights.sum(axis=1), 1.0, atol=1e-5)
+    assert record.layer_weights is None

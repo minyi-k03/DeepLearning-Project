@@ -414,3 +414,107 @@ def test_input_setting_on_non_imdb_dataset_is_rejected(noisy_provider, make_run_
     )
     with pytest.raises(ValueError, match="IMDB only"):
         run_experiment(config, provider, device="cpu")
+
+
+# --- F4 per-document layer weights in the result record (SPEC module 6, US 54) ----------
+
+
+def _random_gate_f4(num_classes: int = 3):  # type: ignore[no-untyped-def]
+    """F4 head whose gate is not at its zero init, so weights differ between documents."""
+    from layer_fusion.fusion import build_fusion_head
+
+    head = build_fusion_head(FusionMethod.F4, num_classes)
+    gen = torch.Generator().manual_seed(0)
+    with torch.no_grad():
+        for name, param in head.named_parameters():
+            if name.startswith("gate"):
+                param.copy_(torch.randn(param.shape, generator=gen))
+    return head
+
+
+def test_eval_layer_weights_match_the_public_extractor_in_view_order(noisy_provider) -> None:  # type: ignore[no-untyped-def]
+    from layer_fusion.fusion import extract_document_layer_weights
+    from layer_fusion.training import RowView, evaluate, evaluate_with_layer_weights
+
+    batch = noisy_provider().get_split("eval")
+    rows = np.random.default_rng(0).permutation(len(batch.doc_ids))[:40].astype(np.int64)
+    view = RowView(batch.vectors, batch.labels, rows)
+    head = _random_gate_f4()
+    device = torch.device("cpu")
+
+    loss, error, predicted, weights = evaluate_with_layer_weights(head, view, 16, device)
+    expected = extract_document_layer_weights(head, torch.from_numpy(batch.vectors[rows]))
+    np.testing.assert_allclose(np.asarray(weights), np.asarray(expected), rtol=1e-5, atol=1e-6)
+    assert (loss, error) == pytest.approx(evaluate(head, view, 16, device)[:2])
+    np.testing.assert_array_equal(predicted, evaluate(head, view, 16, device)[2])
+
+
+@pytest.mark.parametrize(
+    "method",
+    [FusionMethod.B0, FusionMethod.F1, FusionMethod.F2, FusionMethod.F3, FusionMethod.B0_PLUS],
+)
+def test_eval_layer_weights_are_none_without_f4(noisy_provider, method) -> None:  # type: ignore[no-untyped-def]
+    from layer_fusion.fusion import build_fusion_head
+    from layer_fusion.training import RowView, evaluate_with_layer_weights
+
+    batch = noisy_provider().get_split("eval")
+    view = RowView(batch.vectors, batch.labels, np.arange(len(batch.doc_ids), dtype=np.int64))
+    head = build_fusion_head(method, 3)
+    assert evaluate_with_layer_weights(head, view, 16, torch.device("cpu"))[3] is None
+
+
+def test_f4_record_carries_per_document_layer_weights(  # type: ignore[no-untyped-def]
+    noisy_provider, make_run_config, tmp_path
+) -> None:
+    from layer_fusion.layers import NUM_LAYER_VECTORS
+    from layer_fusion.records import load_result_record, save_result_record
+
+    provider = noisy_provider()
+    record = run_experiment(
+        make_run_config(provider, fusion_method=FusionMethod.F4),
+        provider, device="cpu",
+    )
+    weights = np.asarray([p.layer_weights for p in record.predictions])
+    assert weights.shape == (len(provider.get_split("eval").doc_ids), NUM_LAYER_VECTORS)
+    assert (weights > 0).all()
+    np.testing.assert_allclose(weights.sum(axis=1), 1.0, atol=1e-5)
+    assert np.ptp(weights, axis=0).max() > 0  # the trained gate differs between documents
+    assert record.layer_weights is None  # dataset-level weights stay F2 only
+
+    loaded = load_result_record(save_result_record(record, tmp_path))
+    assert [p.layer_weights for p in loaded.predictions] == [
+        p.layer_weights for p in record.predictions
+    ]
+
+
+@pytest.mark.parametrize(
+    "method",
+    [FusionMethod.B0, FusionMethod.F1, FusionMethod.F2, FusionMethod.F3, FusionMethod.B0_PLUS],
+)
+def test_other_records_have_no_per_document_layer_weights(  # type: ignore[no-untyped-def]
+    noisy_provider, make_run_config, method
+) -> None:
+    provider = noisy_provider()
+    record = run_experiment(
+        make_run_config(provider, fusion_method=method, epochs=2),
+        provider, device="cpu",
+    )
+    assert all(p.layer_weights is None for p in record.predictions)
+    assert (record.layer_weights is not None) == (method is FusionMethod.F2)
+
+
+def test_prediction_records_pair_each_document_with_its_own_weights(  # type: ignore[no-untyped-def]
+    noisy_provider, make_run_config
+) -> None:
+    from layer_fusion.runner import prediction_records
+
+    provider = noisy_provider(eval_size=4)
+    batch = provider.get_split("eval")
+    config = make_run_config(provider, fusion_method=FusionMethod.F4)
+    weights = [[float(i)] * 23 for i in range(4)]
+    records = prediction_records(batch, np.zeros(4, dtype=np.int64), config, weights)
+    assert [(r.doc_id, r.layer_weights[0]) for r in records] == [
+        (doc_id, float(i)) for i, doc_id in enumerate(batch.doc_ids)
+    ]
+    with pytest.raises(ValueError, match="3 per-document layer weights for 4 eval documents"):
+        prediction_records(batch, np.zeros(4, dtype=np.int64), config, weights[:3])
