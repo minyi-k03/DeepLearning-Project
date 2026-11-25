@@ -24,6 +24,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import torch
@@ -98,7 +99,6 @@ def make_optimizer(head: nn.Module, lr: float) -> torch.optim.Optimizer:
     return torch.optim.AdamW([g for g in groups if g["params"]], lr=lr)
 
 
-@torch.no_grad()
 def evaluate(
     head: nn.Module, view: RowView, batch_size: int, device: torch.device
 ) -> tuple[float, float, np.ndarray]:
@@ -107,20 +107,55 @@ def evaluate(
     The loss is ``nan``/``inf`` when the head or the inputs are not finite; callers check it,
     because ``argmax`` over NaN logits still yields (meaningless) class 0 predictions.
     """
+    loss, error, predictions, _ = _evaluate(head, view, batch_size, device, False)
+    return loss, error, predictions
+
+
+def evaluate_with_layer_weights(
+    model: nn.Module, view: Any, batch_size: int, device: torch.device
+) -> tuple[float, float, np.ndarray, list[list[float]] | None]:
+    """``evaluate`` plus F4's per-document layer weights (``[docs][23]``, view order).
+
+    ``model`` is a fusion head (frozen backbone, the view yields layer vectors) or a
+    ``FinetuneModel`` (its ``layer_vectors`` output is reused, so the backbone runs once per
+    batch). Heads without per-document weights (all but F4) give ``None``.
+    """
+    return _evaluate(model, view, batch_size, device, True)
+
+
+@torch.no_grad()
+def _evaluate(
+    model: nn.Module, view: Any, batch_size: int, device: torch.device, collect: bool
+) -> tuple[float, float, np.ndarray, list[list[float]] | None]:
+    from layer_fusion.fusion import extract_document_layer_weights
+
     if len(view) == 0:
         raise ValueError("cannot evaluate an empty split")
-    head.eval()
+    model.eval()
+    # FinetuneModel: backbone -> layer vectors -> fusion head; a bare head takes the vectors.
+    finetune = hasattr(model, "layer_vectors") and hasattr(model, "head")
+    head = model.head if finetune else model
     total_loss = torch.zeros((), device=device)
     predictions = np.empty(len(view), dtype=np.int64)
+    weights: list[list[float]] | None = [] if collect else None
     for start in range(0, len(view), batch_size):
         rows = view.rows[start : start + batch_size]
         x, y = view.load(rows, device)
-        logits = head(x)
+        if weights is None:
+            logits = model(x)
+        else:
+            vectors = model.layer_vectors(x) if finetune else x
+            logits = head(vectors)
+            batch_weights = extract_document_layer_weights(head, vectors)
+            if batch_weights is None:
+                weights = None  # not F4: no per-document weights for any batch
+            else:
+                weights.extend(batch_weights)
         total_loss += nn.functional.cross_entropy(logits, y, reduction="sum")
         predictions[start : start + len(rows)] = logits.argmax(dim=1).cpu().numpy()
     labels = np.asarray(view.labels[view.rows], dtype=np.int64)
     error = float(np.mean(predictions != labels))
-    return float(total_loss.item()) / len(view), error, predictions
+    return float(total_loss.item()) / len(view), error, predictions, weights
 
 
 def train_head(
