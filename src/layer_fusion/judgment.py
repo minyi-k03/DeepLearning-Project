@@ -169,7 +169,11 @@ def _slot_weights(weights: Sequence[float], layer_subset: LayerSubset) -> dict[i
     return dict(zip(slots, weights, strict=True))
 
 
-def _without_embedding_unless(slot_weights: dict[int, float], keep: bool) -> dict[int, float]:
+def _without_embedding_unless(
+    slot_weights: dict[int, float], keep: bool | None, rule: str
+) -> dict[int, float]:
+    if keep is None:  # SPEC: a TBD embedding rule is an error, never read as False
+        raise ValueError(f"{rule} is TBD (fixed at the 11/30 lock, T-07a)")
     if keep:
         return slot_weights
     return {slot: w for slot, w in slot_weights.items() if slot != EMBEDDING_SLOT}
@@ -196,7 +200,9 @@ def compute_center_of_gravity(
     and renormalises over layers 1..22, ``True`` counts it at position 0. It has no effect on
     the ablation subsets, which never contain the embedding vector.
     """
-    counted = _without_embedding_unless(_slot_weights(weights, layer_subset), include_embedding)
+    counted = _without_embedding_unless(
+        _slot_weights(weights, layer_subset), include_embedding, "include_embedding_in_cog"
+    )
     total = _total_weight(counted)
     return sum(slot * w for slot, w in counted.items()) / total
 
@@ -215,7 +221,9 @@ def compute_global_layer_weight_ratio(
     neither a global nor a local layer). Global-only weights give 1.0 and local-only give 0.0.
     """
     counted = _without_embedding_unless(
-        _slot_weights(weights, layer_subset), include_embedding_in_denom
+        _slot_weights(weights, layer_subset),
+        include_embedding_in_denom,
+        "include_embedding_in_global_denom",
     )
     total = _total_weight(counted)
     return sum(w for slot, w in counted.items() if slot in GLOBAL_LAYERS) / total
@@ -500,17 +508,21 @@ def _h4_details(
         if "center_of_gravity_mean" in analysis.get(label, {})
     }
     sst2_b0 = _records_for(records, DatasetName.SST2, FusionMethod.B0)
-    comparison = None
+    comparison: dict[str, Any] | None = None
     if sst2_b0:
-        target = _records_for(records, DatasetName.SST2, _h1_target_method(rules))
-        if target:
-            judged = _judge_comparison("H4", "exploratory", sst2_b0, target, rules)
+        # Auxiliary evidence (SPEC T-07c (7)): a TBD rule leaves this entry unavailable instead
+        # of stopping the report. No verdict is drawn, so alpha is not needed.
+        unavailable = _tbd_rules(rules, ("h1_target_fusion_rule", "multi_seed_mcnemar_aggregation"))
+        if unavailable is not None:
+            comparison = {"unavailable": unavailable}
+        elif target := _records_for(records, DatasetName.SST2, _h1_target_method(rules)):
+            c = _compare_with_baseline("H4", sst2_b0, target, _mcnemar_aggregation(rules))
             # Numbers only: an exploratory hypothesis never carries a verdict (ADR 0007).
             comparison = {
-                "mean_diff": judged.mean_diff,
-                "seed_std": judged.seed_std,
-                "mcnemar_p_value": judged.mcnemar_p_value,
-                "n_seeds": judged.details["n_seeds"],
+                "mean_diff": c.improvement,
+                "seed_std": c.seed_std,
+                "mcnemar_p_value": c.representative_p,
+                "n_seeds": c.n_seeds,
             }
     return {
         "center_of_gravity": {n: analysis[c]["center_of_gravity_mean"] for n, c in present.items()},
@@ -576,7 +588,9 @@ def _layer_weight_analysis(
     for rec in main_records:
         if (
             rec.config.fusion_method is FusionMethod.F4
-            and rec.config.dataset is DatasetName.IMDB  # SPEC US 72: Lfull F4 on IMDB only
+            # SPEC US 72: Lfull F4 on IMDB only (under L512 the long documents are cut)
+            and rec.config.dataset is DatasetName.IMDB
+            and rec.config.input_setting is InputSetting.LFULL
             and any(p.layer_weights is not None for p in rec.predictions)
         ):
             f4_cells.setdefault(_cell_label(rec.config), []).append(rec)
@@ -616,13 +630,19 @@ def _bucket_rows(
     return rows
 
 
-def _short_documents(rec: ResultRecord) -> dict[str, tuple[int | None, int]]:
+def _short_documents(rec: ResultRecord) -> dict[str, tuple[int, int]]:
     """doc_id -> (token length, label) for the documents in the <=512 bucket."""
-    return {
-        p.doc_id: (p.token_length, p.label)
-        for p in rec.predictions
-        if p.length_bucket is LengthBucket.LE_512
+    short = [p for p in rec.predictions if p.length_bucket is LengthBucket.LE_512]
+    measured = {
+        p.doc_id: (p.token_length, p.label) for p in short if p.token_length is not None
     }
+    if len(measured) != len(short):
+        # Two missing lengths are not "the same length": the check would pass unchecked.
+        unmeasured = [p.doc_id for p in short if p.token_length is None]
+        raise ValueError(
+            f"run {rec.run_id!r}: no token length for short documents {unmeasured[:5]}"
+        )
+    return measured
 
 
 def _le512_check(
@@ -630,16 +650,20 @@ def _le512_check(
 ) -> dict[str, Any]:
     """Pipeline sanity check: up to 512 tokens L512 and Lfull feed the model the same input.
 
-    The two settings must evaluate the same short documents with the same token lengths (else
-    ``ValueError``). The error-rate gap is reported, not judged: the classifiers were trained on
-    different training inputs, so equal predictions are not required and no threshold is set.
+    The two settings must evaluate the same short documents with the same, known token lengths
+    (else ``ValueError``). The error-rate gap is reported, not judged: the classifiers were
+    trained on different training inputs, so equal predictions are not required and no
+    threshold is set. Seeds that do not pair up leave this one check ``unavailable``; the
+    confirmatory hypotheses that need those runs refuse them on their own.
     """
     by_l512 = _records_by_seed(l512, f"{label} L512")
     by_lfull = _records_by_seed(lfull, f"{label} Lfull")
     if by_l512.keys() != by_lfull.keys():
-        raise ValueError(
-            f"{label}: L512 seeds {sorted(by_l512)} != Lfull seeds {sorted(by_lfull)}"
-        )
+        return {
+            "unavailable": (
+                f"L512 seeds {sorted(by_l512)} and Lfull seeds {sorted(by_lfull)} do not pair up"
+            )
+        }
     rates: dict[str, list[float]] = {"L512": [], "Lfull": []}
     n_docs = 0
     for seed in sorted(by_l512):
@@ -790,10 +814,8 @@ def _records_by_seed(records: Sequence[ResultRecord], label: str) -> dict[int, R
     return by_seed
 
 
-def _mcnemar_rules(rules: DecisionRules) -> tuple[float, str]:
-    """The significance level and seed aggregation name; TBD or unknown values are refused."""
-    if rules.mcnemar_alpha is None:
-        raise ValueError("mcnemar_alpha is TBD (fixed at the 11/30 lock, T-07a)")
+def _mcnemar_aggregation(rules: DecisionRules) -> str:
+    """The seed aggregation name; TBD or unknown values are refused."""
     aggregation_name = rules.multi_seed_mcnemar_aggregation
     if aggregation_name is None:
         raise ValueError("multi_seed_mcnemar_aggregation is TBD (fixed at the 11/30 lock, T-07a)")
@@ -802,7 +824,27 @@ def _mcnemar_rules(rules: DecisionRules) -> tuple[float, str]:
             f"unknown multi_seed_mcnemar_aggregation {aggregation_name!r}; "
             f"supported: {sorted(MCNEMAR_SEED_AGGREGATIONS)}"
         )
-    return rules.mcnemar_alpha, aggregation_name
+    return aggregation_name
+
+
+def _mcnemar_rules(rules: DecisionRules) -> tuple[float, str]:
+    """The significance level and seed aggregation name; TBD or unknown values are refused."""
+    if rules.mcnemar_alpha is None:
+        raise ValueError("mcnemar_alpha is TBD (fixed at the 11/30 lock, T-07a)")
+    return rules.mcnemar_alpha, _mcnemar_aggregation(rules)
+
+
+@dataclass(frozen=True)
+class _Comparison:
+    """The numbers of a paired B0-vs-candidate comparison, before any verdict is drawn."""
+
+    improvement: float
+    seed_std: float
+    representative_p: float
+    per_seed_p: dict[int, float]
+    n_seeds: int
+    base_mean: float
+    cand_mean: float
 
 
 def _judge_comparison(
@@ -824,7 +866,37 @@ def _judge_comparison(
     keeps the raw two-sided p-values.
     """
     alpha, aggregation_name = _mcnemar_rules(rules)
+    c = _compare_with_baseline(hypothesis_id, baseline, candidate, aggregation_name, free_fields)
 
+    # A negative improvement can never reach the (non-negative) seed std, so a significant
+    # difference in the wrong direction is NO_EFFECT without a separate direction check.
+    supported = c.improvement >= c.seed_std and c.representative_p < alpha
+    return HypothesisJudgment(
+        hypothesis_id=hypothesis_id,
+        kind=kind,
+        verdict=Verdict.SUPPORTED if supported else Verdict.NO_EFFECT,
+        mean_diff=c.improvement,
+        seed_std=c.seed_std,
+        mcnemar_p_value=c.representative_p,
+        details={
+            "per_seed_mcnemar_p": c.per_seed_p,
+            "aggregation": aggregation_name,
+            "alpha": alpha,
+            "n_seeds": c.n_seeds,
+            "baseline_mean_error": c.base_mean,
+            "candidate_mean_error": c.cand_mean,
+        },
+    )
+
+
+def _compare_with_baseline(
+    hypothesis_id: str,
+    baseline: Sequence[ResultRecord],
+    candidate: Sequence[ResultRecord],
+    aggregation_name: str,
+    free_fields: frozenset[str] = _COMPARISON_FREE_FIELDS,
+) -> _Comparison:
+    """Seed-mean improvement, seed std and seed-aggregated paired McNemar (no alpha needed)."""
     _require_one_cell(hypothesis_id, [*baseline, *candidate], free_fields)
     base_by_seed = _records_by_seed(baseline, f"{hypothesis_id} baseline")
     cand_by_seed = _records_by_seed(candidate, f"{hypothesis_id} candidate")
@@ -853,25 +925,14 @@ def _judge_comparison(
         for seed in seeds
     ]
     representative_p = MCNEMAR_SEED_AGGREGATIONS[aggregation_name](counted_p)
-
-    # A negative improvement can never reach the (non-negative) seed std, so a significant
-    # difference in the wrong direction is NO_EFFECT without a separate direction check.
-    supported = improvement >= seed_std and representative_p < alpha
-    return HypothesisJudgment(
-        hypothesis_id=hypothesis_id,
-        kind=kind,
-        verdict=Verdict.SUPPORTED if supported else Verdict.NO_EFFECT,
-        mean_diff=improvement,
+    return _Comparison(
+        improvement=improvement,
         seed_std=seed_std,
-        mcnemar_p_value=representative_p,
-        details={
-            "per_seed_mcnemar_p": per_seed_p,
-            "aggregation": aggregation_name,
-            "alpha": alpha,
-            "n_seeds": len(seeds),
-            "baseline_mean_error": base_mean,
-            "candidate_mean_error": cand_mean,
-        },
+        representative_p=representative_p,
+        per_seed_p=per_seed_p,
+        n_seeds=len(seeds),
+        base_mean=base_mean,
+        cand_mean=cand_mean,
     )
 
 
@@ -921,20 +982,32 @@ def _document_gains(reference: ResultRecord, improved: ResultRecord) -> dict[str
     return gains
 
 
-def _paired_sign_test(gains_a: dict[str, int], gains_b: dict[str, int]) -> float:
+@dataclass(frozen=True)
+class _SignTest:
+    """Two-sided sign test result and the document counts on each side."""
+
+    p_value: float
+    a_ahead: int
+    b_ahead: int
+
+
+def _paired_sign_test(gains_a: dict[str, int], gains_b: dict[str, int]) -> _SignTest:
     """Two-sided exact sign test on the documents where effect A and effect B gain differently.
 
     The generalisation of McNemar to a difference of effects: with per-document gains in
     {-1, 0, +1}, count documents where A gains more than B against the reverse. No such
-    document means no evidence of a difference (p = 1.0).
+    document means no evidence of a difference (p = 1.0). The gain difference of one document
+    runs from -2 to +2, so the counts can favour the other side than the net error gap does;
+    the caller checks both directions.
     """
     if gains_a.keys() != gains_b.keys():
         raise ValueError("the two effects must be measured on the same documents")
     a_ahead = sum(1 for doc in gains_a if gains_a[doc] > gains_b[doc])
     b_ahead = sum(1 for doc in gains_a if gains_a[doc] < gains_b[doc])
     if a_ahead + b_ahead == 0:
-        return 1.0
-    return float(binomtest(min(a_ahead, b_ahead), a_ahead + b_ahead, 0.5).pvalue)
+        return _SignTest(1.0, 0, 0)
+    p_value = float(binomtest(min(a_ahead, b_ahead), a_ahead + b_ahead, 0.5).pvalue)
+    return _SignTest(p_value, a_ahead, b_ahead)
 
 
 def _judge_effect_difference(
@@ -952,9 +1025,10 @@ def _judge_effect_difference(
     error-rate improvement (reference minus improved). SUPPORTED needs both: the effect gap is
     at least the larger of the two effects' seed stds, and the paired sign test on per-document
     gains (see ``_paired_sign_test``) is significant after the seed aggregation of
-    ``rules.multi_seed_mcnemar_aggregation``. A seed counts only if its own larger effect
-    exceeds its smaller one. This operationalisation is a T-07c implementation choice
-    (SPEC §결정 필요 사항); T-07a confirms or replaces it.
+    ``rules.multi_seed_mcnemar_aggregation``. A seed counts only if both its own larger effect
+    exceeds its smaller one and more documents gain more under the larger effect than the
+    reverse (the two can disagree, see ``_paired_sign_test``). This operationalisation is a
+    T-07c implementation choice (SPEC §결정 필요 사항); T-07a confirms or replaces it.
     """
     alpha, aggregation_name = _mcnemar_rules(rules)
     pairs_larger = _effect_by_seed(hypothesis_id, labels[0], larger)
@@ -976,14 +1050,16 @@ def _judge_effect_difference(
     difference = mean_larger - mean_smaller
     seed_std = max(std_larger, std_smaller)
 
-    per_seed_p = {
+    tests = {
         seed: _paired_sign_test(
             _document_gains(*pairs_larger[seed]), _document_gains(*pairs_smaller[seed])
         )
         for seed in seeds
     }
     counted_p = [
-        per_seed_p[seed] if values_larger[i] > values_smaller[i] else 1.0
+        tests[seed].p_value
+        if values_larger[i] > values_smaller[i] and tests[seed].a_ahead > tests[seed].b_ahead
+        else 1.0
         for i, seed in enumerate(seeds)
     ]
     representative_p = MCNEMAR_SEED_AGGREGATIONS[aggregation_name](counted_p)
@@ -997,14 +1073,30 @@ def _judge_effect_difference(
         seed_std=seed_std,
         mcnemar_p_value=representative_p,
         details={
-            "per_seed_sign_test_p": per_seed_p,
+            "per_seed_sign_test_p": {seed: test.p_value for seed, test in tests.items()},
+            "per_seed_documents_ahead": {
+                seed: {labels[0]: test.a_ahead, labels[1]: test.b_ahead}
+                for seed, test in tests.items()
+            },
             "aggregation": aggregation_name,
             "alpha": alpha,
             "n_seeds": len(seeds),
             "effect_mean": {labels[0]: mean_larger, labels[1]: mean_smaller},
             "effect_seed_std": {labels[0]: std_larger, labels[1]: std_smaller},
+            "mean_error": {
+                labels[0]: _arm_mean_errors(pairs_larger),
+                labels[1]: _arm_mean_errors(pairs_smaller),
+            },
         },
     )
+
+
+def _arm_mean_errors(pairs: dict[int, tuple[ResultRecord, ResultRecord]]) -> dict[str, float]:
+    """Seed-mean error rate of an effect's two arms (e.g. H3: B0 and the fusion method)."""
+    return {
+        "reference": statistics.fmean(ref.eval_error_rate for ref, _ in pairs.values()),
+        "improved": statistics.fmean(imp.eval_error_rate for _, imp in pairs.values()),
+    }
 
 
 def _records_for(

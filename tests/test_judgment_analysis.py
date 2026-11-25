@@ -26,7 +26,12 @@ from layer_fusion.contracts import (
     Verdict,
 )
 from layer_fusion.inputs import assign_length_bucket
-from layer_fusion.judgment import judge_hypotheses, load_decision_rules
+from layer_fusion.judgment import (
+    compute_center_of_gravity,
+    compute_global_layer_weight_ratio,
+    judge_hypotheses,
+    load_decision_rules,
+)
 
 RULES_PATH = Path(__file__).resolve().parent.parent / "configs" / "decision_rules.yaml"
 
@@ -903,3 +908,131 @@ def test_h5b_skips_the_decomposition_when_f1_covers_other_seeds() -> None:
     assert h5b.verdict == Verdict.SUPPORTED
     assert h5b.details["decomposition"] is None
     assert "seeds" in h5b.details["decomposition_skipped"]
+
+
+# --- Cross-review fixes (T-07c, 2nd review) ------------------------------------------------
+
+
+def test_effect_difference_does_not_count_a_seed_whose_documents_favour_the_other_effect() -> None:
+    """Per-document gain differences run from -2 to +2, so the net gap and the document count
+    can point in opposite directions.
+
+    Small data: B0 errs on docs 0-14, F1 on none -> gain +1 on docs 0-14 (effect 15/200).
+    Full data: B0 errs on docs 15-43, F1 on docs 0-14 -> gain -1 on 0-14, +1 on 15-43 (14/200).
+    Net, small wins by 1/200, but 29 documents favour full data against 15 (+2 each) for small:
+    the two-sided sign test is significant (p ~ .049) in the direction H2 does not claim.
+    """
+    records = amount_records(
+        {
+            (SMALL, B0): lambda s: set(range(15)),
+            (SMALL, F1): lambda s: set(),
+            (FULL, B0): lambda s: set(range(15, 44)),
+            (FULL, F1): lambda s: set(range(15)),
+        }
+    )
+
+    h2 = judge_hypotheses(records, make_rules(mcnemar_alpha=0.05)).judgments["H2"]
+
+    assert h2.mean_diff == pytest.approx(0.005)  # net gap positive, seed std 0
+    assert h2.details["per_seed_sign_test_p"][0] < 0.05  # significant, but the other way
+    assert h2.details["per_seed_documents_ahead"][0] == {"small": 15, "full": 29}
+    assert h2.mcnemar_p_value == 1.0
+    assert h2.verdict == Verdict.NO_EFFECT
+
+
+def test_h4_sst2_comparison_is_unavailable_while_the_h1_target_is_tbd() -> None:
+    """Exploratory evidence never stops the report: the comparison says why it is missing."""
+    report = judge_hypotheses(sst2_pair(60, 40), make_rules(h1_target_fusion_rule=None))
+
+    comparison = report.judgments["H4"].details["sst2_error_comparison"]
+
+    assert "h1_target_fusion_rule is TBD" in comparison["unavailable"]
+
+
+def test_h4_sst2_comparison_needs_no_significance_level() -> None:
+    """No verdict is drawn for H4, so alpha (TBD) is not needed for its numbers."""
+    report = judge_hypotheses(sst2_pair(60, 40), make_rules(mcnemar_alpha=None))
+
+    comparison = report.judgments["H4"].details["sst2_error_comparison"]
+
+    assert comparison["mean_diff"] == pytest.approx(0.10)
+    assert comparison["mcnemar_p_value"] < 0.05
+
+
+@pytest.mark.parametrize(
+    ("summary", "rule"),
+    [
+        (compute_center_of_gravity, "include_embedding_in_cog"),
+        (compute_global_layer_weight_ratio, "include_embedding_in_global_denom"),
+    ],
+)
+def test_layer_weight_summaries_refuse_a_tbd_embedding_rule(
+    summary: Callable[..., float], rule: str
+) -> None:
+    with pytest.raises(ValueError, match=f"{rule} is TBD"):
+        summary(one_hot(22), None)
+
+
+def test_le512_check_of_an_arm_with_unpaired_seeds_is_unavailable_not_fatal() -> None:
+    """F1 at L512 has 3 seeds but only 2 at Lfull: the H5b verdict and the F2 check survive."""
+    records = h5b_records(
+        {
+            B0: (lambda s: set(range(100, 180 + s)), lambda s: set(range(100, 170))),
+            FusionMethod.F1: (lambda s: set(range(100, 170 + s)), lambda s: set(range(100, 150))),
+            FusionMethod.F2: (lambda s: set(range(100, 160 + s)), lambda s: set(range(100, 130))),
+        }
+    )
+    records = [
+        r
+        for r in records
+        if not (
+            r.config.fusion_method is F1
+            and r.config.input_setting is InputSetting.LFULL
+            and r.config.seed == 2
+        )
+    ]
+
+    report = judge_hypotheses(records, make_rules())
+
+    assert report.judgments["H5b"].verdict == Verdict.SUPPORTED
+    checks = report.length_bucket_analysis["le512_check"]
+    assert "seeds" in checks["F1"]["unavailable"]
+    assert checks["F2"]["same_documents"] is True
+
+
+def test_f4_length_correlation_leaves_out_l512_runs() -> None:
+    """SPEC US 72 asks for Lfull F4 only: under L512 the long documents are cut."""
+    records = [
+        replace(rec, config=replace(rec.config, input_setting=InputSetting.L512))
+        for rec in f4_records()
+    ]
+
+    assert judge_hypotheses(records, make_rules(**F4_RULES)).layer_weight_analysis == {}
+
+
+def test_h3_details_carry_the_mean_error_of_each_arm() -> None:
+    """SPEC US 61: the gain against fine-tuning needs the raw error rates, not only the effects."""
+    h3 = judge_hypotheses(backbone_records(shrinking_effect_errors()), make_rules()).judgments["H3"]
+
+    errors = h3.details["mean_error"]
+    # frozen: B0 (90+s)/200 -> .455, F1 (30+2s)/200 -> .16; fine-tuned: B0 .305, F1 .255
+    assert errors["frozen"] == pytest.approx({"reference": 0.455, "improved": 0.16})
+    assert errors["finetune"] == pytest.approx({"reference": 0.305, "improved": 0.255})
+
+
+def test_le512_check_refuses_short_documents_without_a_token_length() -> None:
+    """A missing length on both sides is not 'the same length': nothing was checked."""
+    records = h5a_records(lambda s: {1}, lambda s: {1})
+    records = [
+        replace(
+            rec,
+            predictions=[
+                replace(p, token_length=None) if p.doc_id == "imdb-00000" else p
+                for p in rec.predictions
+            ],
+        )
+        for rec in records
+    ]
+
+    with pytest.raises(ValueError, match="token length"):
+        judge_hypotheses(records, make_rules())
