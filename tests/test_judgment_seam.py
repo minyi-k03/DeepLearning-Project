@@ -19,6 +19,7 @@ from layer_fusion.contracts import (
     DecisionRules,
     FusionMethod,
     InputSetting,
+    LayerSubset,
     PredictionRecord,
     ResultRecord,
     RunConfig,
@@ -26,7 +27,13 @@ from layer_fusion.contracts import (
     TrackKind,
     Verdict,
 )
-from layer_fusion.judgment import compute_paired_mcnemar, judge_hypotheses, load_decision_rules
+from layer_fusion.judgment import (
+    compute_center_of_gravity,
+    compute_global_layer_weight_ratio,
+    compute_paired_mcnemar,
+    judge_hypotheses,
+    load_decision_rules,
+)
 
 RULES_PATH = Path(__file__).resolve().parent.parent / "configs" / "decision_rules.yaml"
 
@@ -425,19 +432,220 @@ def test_hypothesis_kinds_must_come_from_the_rules_file() -> None:
         judge_hypotheses(records, make_rules(extra={}))
 
 
-@pytest.mark.skip(reason="TODO(T-07c): Enable after seed consistency check is implemented")
+def make_f2_record(
+    seed: int,
+    weights: list[float],
+    *,
+    dataset: DatasetName = DatasetName.IMDB,
+    input_setting: InputSetting | None = InputSetting.LFULL,
+    layer_subset: LayerSubset = LayerSubset.ALL,
+) -> ResultRecord:
+    """F2 / frozen / full record carrying only dataset-level layer weights."""
+    config = RunConfig(
+        dataset=dataset,
+        data_amount=DataAmount.FULL,
+        fusion_method=FusionMethod.F2,
+        backbone_condition=BackboneCondition.FROZEN,
+        seed=seed,
+        layer_subset=layer_subset,
+        input_setting=input_setting,
+    )
+    return ResultRecord(
+        run_id=f"F2-{dataset.value}-s{seed}",
+        config=config,
+        selected_lr=1e-3,
+        lr_tuning_scores={1e-3: 0.0},
+        eval_error_rate=0.1,
+        predictions=[],
+        trainable_params=0,
+        train_seconds=0.0,
+        layer_weights=weights,
+    )
+
+
+def peaked_weights(peak_slot: int, *, base: float = 0.01, size: int = 23) -> list[float]:
+    """Weights that fall off with distance from ``peak_slot``, normalised to sum to 1."""
+    raw = [base + 1.0 / (1 + abs(slot - peak_slot)) for slot in range(size)]
+    total = sum(raw)
+    return [w / total for w in raw]
+
+
+CONSISTENCY_RULES = {
+    "include_embedding_in_cog": False,
+    "include_embedding_in_global_denom": False,
+    "seed_rank_corr_min": 0.5,
+    "cog_seed_std_max": 2.0,
+}
+IMDB_F2_CELL = "imdb/full/frozen/Lfull/F2/all"
+
+
 def test_low_seed_consistency_holds_layer_weight_interpretation() -> None:
     """When seed consistency fails thresholds, layer-weight interpretation is marked HELD."""
-    raise NotImplementedError
+    rules = make_rules(**CONSISTENCY_RULES)
+    stable = [make_f2_record(s, peaked_weights(20 + s % 2)) for s in range(3)]
+    # Seeds disagree on where the weight sits: low layers, high layers, low layers again.
+    unstable = [make_f2_record(s, peaked_weights(3 if s % 2 == 0 else 21)) for s in range(3)]
+
+    stable_cell = judge_hypotheses(stable, rules).layer_weight_analysis[IMDB_F2_CELL]
+    unstable_cell = judge_hypotheses(unstable, rules).layer_weight_analysis[IMDB_F2_CELL]
+
+    assert stable_cell["seed_consistent"] is True
+    assert stable_cell["interpretation"] is None
+    assert stable_cell["rank_corr_mean"] > 0.5
+    assert stable_cell["cog_seed_std"] < 2.0
+
+    assert unstable_cell["seed_consistent"] is False
+    assert unstable_cell["interpretation"] == Verdict.HELD
+    # Either threshold failing is enough: here both do (rank correlation and CoG spread).
+    assert unstable_cell["rank_corr_mean"] < 0.5
+    assert unstable_cell["cog_seed_std"] > 2.0
 
 
-@pytest.mark.skip(reason="TODO(T-07c): Enable after CoG and global ratio are implemented")
-def test_center_of_gravity_and_global_ratio_match_hand_calculation() -> None:
+@pytest.mark.parametrize("include_embedding", [True, False])
+def test_center_of_gravity_and_global_ratio_match_hand_calculation(
+    include_embedding: bool,
+) -> None:
     """All weight on layer 22 => CoG == 22.0 and global_ratio == 1.0."""
-    raise NotImplementedError
+    weights = [0.0] * 23  # slot 0 = embedding vector, slots 1..22 = layers
+    weights[22] = 1.0
+
+    assert compute_center_of_gravity(weights, include_embedding) == pytest.approx(22.0)
+    assert compute_global_layer_weight_ratio(weights, include_embedding) == pytest.approx(1.0)
 
 
-@pytest.mark.skip(reason="TODO(T-07c): Enable after H5b decomposition is implemented")
+def test_embedding_weight_is_counted_or_dropped_by_the_rule_flag() -> None:
+    """Half on the embedding vector, half on layer 22 (a global layer)."""
+    weights = [0.0] * 23
+    weights[0] = 0.5
+    weights[22] = 0.5
+
+    # Embedding counted (as slot 0): (0 * .5 + 22 * .5) / 1 = 11; 0.5 of all weight is global.
+    assert compute_center_of_gravity(weights, True) == pytest.approx(11.0)
+    assert compute_global_layer_weight_ratio(weights, True) == pytest.approx(0.5)
+    # Embedding dropped: only layer 22 remains and is renormalised to weight 1.
+    assert compute_center_of_gravity(weights, False) == pytest.approx(22.0)
+    assert compute_global_layer_weight_ratio(weights, False) == pytest.approx(1.0)
+
+
+def test_center_of_gravity_and_ratio_for_the_ablation_subsets() -> None:
+    """F2 global-only has 8 weights (layers 1,4,..,22); local-only has 14 (the other layers)."""
+    global_weights = [0.0] * 8
+    global_weights[0] = 0.5  # layer 1
+    global_weights[7] = 0.5  # layer 22
+    local_weights = [0.0] * 14
+    local_weights[0] = 1.0  # layer 2, the first local layer
+
+    assert compute_center_of_gravity(
+        global_weights, False, layer_subset=LayerSubset.GLOBAL_ONLY
+    ) == pytest.approx(11.5)
+    assert compute_global_layer_weight_ratio(
+        global_weights, False, layer_subset=LayerSubset.GLOBAL_ONLY
+    ) == pytest.approx(1.0)
+    assert compute_center_of_gravity(
+        local_weights, False, layer_subset=LayerSubset.LOCAL_ONLY
+    ) == pytest.approx(2.0)
+    assert compute_global_layer_weight_ratio(
+        local_weights, False, layer_subset=LayerSubset.LOCAL_ONLY
+    ) == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    ("weights", "message"),
+    [
+        ([1.0] * 22, "expects 23 weights"),
+        ([0.0] * 23, "no weight"),
+        ([-0.1, 1.1] + [0.0] * 21, "non-negative"),
+        ([float("nan")] + [0.0] * 22, "finite"),
+    ],
+)
+def test_layer_weight_summaries_refuse_malformed_weights(
+    weights: list[float], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        compute_center_of_gravity(weights, True)
+    with pytest.raises(ValueError, match=message):
+        compute_global_layer_weight_ratio(weights, True)
+
+
+def test_embedding_only_weights_have_no_layer_summary_without_the_embedding() -> None:
+    weights = [1.0] + [0.0] * 22
+    with pytest.raises(ValueError, match="no weight"):
+        compute_center_of_gravity(weights, False)
+
+
+def make_imdb_result(
+    method: FusionMethod, seed: int, setting: InputSetting, n_errors: int
+) -> ResultRecord:
+    """IMDB / frozen / full record (200 docs); the first 100 are short, errors start at doc 100."""
+    wrong = set(range(100, 100 + n_errors))
+    predictions = [
+        PredictionRecord(
+            doc_id=f"imdb-{i:05d}",
+            label=1,
+            prediction=0 if i in wrong else 1,
+            token_length=300 if i < 100 else 700,
+        )
+        for i in range(200)
+    ]
+    return ResultRecord(
+        run_id=f"{method.value}-{setting.value}-s{seed}",
+        config=RunConfig(
+            dataset=DatasetName.IMDB,
+            data_amount=DataAmount.FULL,
+            fusion_method=method,
+            backbone_condition=BackboneCondition.FROZEN,
+            seed=seed,
+            input_setting=setting,
+        ),
+        selected_lr=1e-3,
+        lr_tuning_scores={1e-3: 0.0},
+        eval_error_rate=n_errors / 200,
+        predictions=predictions,
+        trainable_params=0,
+        train_seconds=0.0,
+    )
+
+
 def test_h5b_report_splits_mixing_effect_and_weight_learning_effect() -> None:
     """H5b details must expose F1 - B0 (mixing) and F2 - F1 (weight learning)."""
-    raise NotImplementedError
+    # Errors per setting (L512 gets +seed so every method's gain varies a little by seed):
+    #   B0: L512 80+s, Lfull 70   F1: L512 70+s, Lfull 50   F2: L512 60+s, Lfull 30
+    errors = {
+        FusionMethod.B0: (80, 70),
+        FusionMethod.F1: (70, 50),
+        FusionMethod.F2: (60, 30),
+    }
+    records = [
+        make_imdb_result(
+            method, seed, setting, count + (seed if setting is InputSetting.L512 else 0)
+        )
+        for method, (l512, lfull) in errors.items()
+        for seed in range(3)
+        for setting, count in ((InputSetting.L512, l512), (InputSetting.LFULL, lfull))
+    ]
+
+    # H5a shares the IMDB records, so its (TBD) target rule needs a synthetic value too.
+    rules = make_rules(h5a_target_fusion_rule="F2")
+    h5b = judge_hypotheses(records, rules).judgments["H5b"]
+
+    # Gain from the longer input (L512 error - Lfull error), mean over seeds s = 0, 1, 2:
+    #   B0 (10+s)/200 = .055, F1 (20+s)/200 = .105, F2 (30+s)/200 = .155
+    assert h5b.kind == "confirmatory"
+    assert h5b.verdict == Verdict.SUPPORTED  # F2 gains .10 more than B0, seed std .005
+    assert h5b.mean_diff == pytest.approx(0.10)
+    assert h5b.seed_std == pytest.approx(0.005)
+    assert h5b.mcnemar_p_value is not None and h5b.mcnemar_p_value < 0.05
+
+    # Not GLOSSARY's 섞기 효과 / 가중치 학습 효과 themselves: those are the by_input_setting values.
+    gain = h5b.details["decomposition"]["long_input_gain"]
+    assert gain["mixing_gain_difference"] == pytest.approx(0.05)  # F1's gain - B0's gain
+    assert gain["weight_learning_gain_difference"] == pytest.approx(0.05)  # F2's gain - F1's gain
+    total = gain["mixing_gain_difference"] + gain["weight_learning_gain_difference"]
+    assert total == pytest.approx(h5b.mean_diff)
+
+    # Per input setting, the error-rate improvements (positive = lower error): B0 - F1, F1 - F2.
+    by_setting = h5b.details["decomposition"]["by_input_setting"]
+    assert by_setting["L512"]["mixing_effect"] == pytest.approx(0.05)  # .405 - .355
+    assert by_setting["L512"]["weight_learning_effect"] == pytest.approx(0.05)  # .355 - .305
+    assert by_setting["Lfull"]["mixing_effect"] == pytest.approx(0.10)  # .35 - .25
+    assert by_setting["Lfull"]["weight_learning_effect"] == pytest.approx(0.10)  # .25 - .15
