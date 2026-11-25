@@ -90,9 +90,10 @@ RULES_YAML = ROOT / "configs" / "decision_rules.yaml"
 
 
 def test_loader_reads_the_real_rules_file_with_the_t07a_values() -> None:
-    rules = load_decision_rules(str(RULES_YAML))
+    # require_locked=True: the real file must pass the gate main-experiment judgment uses.
+    rules = load_decision_rules(str(RULES_YAML), require_locked=True)
 
-    assert rules.status == "draft"  # becomes "locked" after both members approve (11/30)
+    assert rules.status == "locked"  # locked after both members approved the values (T-07a)
     assert rules.freeze_date == "2026-11-30"
     assert rules.core_num_seeds == 5
     assert rules.secondary_num_seeds == 3
@@ -137,9 +138,15 @@ def test_loader_exposes_hypothesis_type_and_priority_from_the_file() -> None:
     assert {h for h, body in hypotheses.items() if body["type"] == "exploratory"} == {"H4", "H5c"}
 
 
-def test_loader_can_refuse_rules_that_are_not_locked() -> None:
+def test_loader_can_refuse_rules_that_are_not_locked(tmp_path: Path) -> None:
+    draft = tmp_path / "draft_rules.yaml"
+    draft.write_text(
+        RULES_YAML.read_text(encoding="utf-8").replace("status: locked", "status: draft", 1),
+        encoding="utf-8",
+    )
+    assert load_decision_rules(str(draft)).status == "draft"  # readable without the gate
     with pytest.raises(ValueError, match="locked"):
-        load_decision_rules(str(RULES_YAML), require_locked=True)
+        load_decision_rules(str(draft), require_locked=True)
 
 
 def test_loader_rejects_a_file_without_the_required_keys(tmp_path: Path) -> None:

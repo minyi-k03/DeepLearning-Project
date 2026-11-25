@@ -1,10 +1,10 @@
 # 판정 규칙 문서 (SPEC.md §판정과 분석, ADR 0007)
 # 11/30에 모든 값을 고정하며, 본 실험 결과를 본 뒤에는 절대 변경하지 않습니다.
-# T-07a: 값은 채웠지만 두 사람(고용민·차가원) 승인 전이라 status는 draft입니다.
-# 승인 후 "locked"로 바꾸면 본 실험 판정이 시작됩니다(로더 require_locked).
+# T-07a: 두 사람(고용민·차가원)이 값을 승인해 status를 locked로 고정했습니다(PR #28 승인 리뷰).
+# 로더 require_locked는 이 값이 locked일 때만 본 실험 판정을 허용합니다.
 
 freeze_date: "2026-11-30"
-status: draft  # 두 사람 승인 후 11/30에 "locked"로 변경
+status: locked  # 두 사람 승인 완료. 본 실험 결과를 본 뒤에는 값을 바꾸지 않는다(ADR 0007)
 
 hypotheses:
   H1:
