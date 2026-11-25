@@ -425,13 +425,20 @@ def _write_selection_records(out: Path, scores: dict[str, float], kind: RunKind)
         ), out)
 
 
-def test_cli_main_finetune_queue_needs_locked_rules_before_the_lock(tmp_path: Path) -> None:
+def test_cli_main_finetune_queue_needs_locked_rules(tmp_path: Path) -> None:
     runs = tmp_path / "frozen"
     _write_selection_records(runs, {"F1": .3, "F2": .2, "F3": .1, "F4": .4}, RunKind.MAIN)
+    draft = tmp_path / "draft_rules.yaml"  # the real rules are locked since T-07a; re-draft a copy
+    draft.write_text(
+        (Path(__file__).resolve().parent.parent / "configs" / "decision_rules.yaml")
+        .read_text(encoding="utf-8").replace("status: locked", "status: draft", 1),
+        encoding="utf-8",
+    )
     lock = tmp_path / "main_queue.lock"
     with pytest.raises(SystemExit, match="needs 'locked'"):
         cli.main(["--experiments", "mnli_finetune_full", "--best-fusion-from", str(runs),
-                  "--output-dir", str(tmp_path / "out"), "--lock-file", str(lock)])
+                  "--rules", str(draft), "--output-dir", str(tmp_path / "out"),
+                  "--lock-file", str(lock)])
     assert not lock.exists()
 
 

@@ -15,7 +15,7 @@ from layer_fusion.records import save_result_record  # noqa: E402
 from layer_fusion.runner import run_experiment  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-RULES = ROOT / "configs" / "decision_rules.yaml"  # status: draft until the 11/30 lock
+RULES = ROOT / "configs" / "decision_rules.yaml"  # status: locked (T-07a); fixtures re-draft it
 _spec = importlib.util.spec_from_file_location(
     "judge_and_report_cli", ROOT / "scripts" / "judge_and_report.py"
 )
@@ -46,15 +46,16 @@ def _args(runs: Path, out: Path, *extra: str, rules: Path = RULES) -> list[str]:
 
 @pytest.fixture
 def exploratory_rules(tmp_path: Path) -> Path:
-    """The real draft rules with only the exploratory hypotheses kept.
+    """The real rules, re-drafted, with only the exploratory hypotheses kept.
 
-    Confirmatory hypotheses need values that stay TBD until the 11/30 lock (judgment refuses
-    them, never guesses); dropping them lets main records reach the report without inventing
-    any rule value.
+    Dropping the confirmatory hypotheses lets main records of any fusion method reach the
+    report without needing the full set of B0/F-method cells they judge. ``status`` is put
+    back to ``draft`` so these tests keep exercising the ``--allow-draft-rules`` path.
     """
     import yaml
 
     doc = yaml.safe_load(RULES.read_text(encoding="utf-8"))
+    doc["status"] = "draft"
     doc["hypotheses"] = {
         hid: spec for hid, spec in doc["hypotheses"].items() if spec["type"] == "exploratory"
     }
@@ -66,10 +67,11 @@ def exploratory_rules(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def tbd_rules(tmp_path: Path) -> Path:
-    """The draft rules with the McNemar level put back to TBD (null), as before the lock."""
+    """The rules re-drafted with the McNemar level put back to TBD (null), as before the lock."""
     import yaml
 
     doc = yaml.safe_load(RULES.read_text(encoding="utf-8"))
+    doc["status"] = "draft"
     doc["criteria"]["mcnemar_alpha"] = None
     path = tmp_path / "tbd_rules.yaml"
     path.write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
@@ -86,17 +88,21 @@ def test_confirmatory_hypotheses_with_tbd_rules_are_refused_not_guessed(  # type
     assert not out.exists()
 
 
-def test_draft_rules_are_refused_without_the_flag(runs_dir, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+def test_draft_rules_are_refused_without_the_flag(  # type: ignore[no-untyped-def]
+    runs_dir, exploratory_rules, tmp_path: Path
+) -> None:
     out = tmp_path / "report"
     with pytest.raises(SystemExit, match="needs 'locked'"):
-        cli.main(_args(runs_dir(debug=[FusionMethod.B0]), out))
+        cli.main(_args(runs_dir(debug=[FusionMethod.B0]), out, rules=exploratory_rules))
     assert not out.exists()
 
 
-def test_debug_records_never_reach_the_result_table(runs_dir, tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+def test_debug_records_never_reach_the_result_table(  # type: ignore[no-untyped-def]
+    runs_dir, exploratory_rules, tmp_path: Path, capsys
+) -> None:
     out = tmp_path / "report"
     runs = runs_dir(debug=[FusionMethod.B0, FusionMethod.F4])
-    paths = cli.main(_args(runs, out, "--allow-draft-rules"))
+    paths = cli.main(_args(runs, out, "--allow-draft-rules", rules=exploratory_rules))
 
     printed = capsys.readouterr().out
     assert "draft rules (not for the report)" in printed
