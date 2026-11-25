@@ -57,13 +57,33 @@ IMDB_ABLATION = {
 }
 
 
+def test_real_matrix_seed_lists_follow_the_decision_rules() -> None:
+    """T-07a: seed counts live in two files; they must agree and the lists must be nested."""
+    rules = yaml.safe_load((ROOT / "configs" / "decision_rules.yaml").read_text(encoding="utf-8"))
+    criteria = rules["criteria"]
+    experiments = {
+        exp["id"]: exp
+        for exp in yaml.safe_load(REAL_MATRIX.read_text(encoding="utf-8"))["experiments"]
+    }
+    core_ids = set(criteria["core_comparisons_for_5_seeds"])
+    assert core_ids <= experiments.keys()
+
+    for exp_id, exp in experiments.items():
+        expected = criteria["core_num_seeds"] if exp_id in core_ids else (
+            criteria["finetune_num_seeds"]
+            if exp["backbone_condition"] == "finetune"
+            else criteria["secondary_num_seeds"]
+        )
+        assert exp["seeds"] == list(range(expected)), exp_id  # nested: [0..n-1]
+
+
 def test_real_config_files_are_refused_while_values_are_tbd() -> None:
     """Today the real matrix and budget are TBD; expansion must say what is missing."""
     with pytest.raises(ValueError) as info:
         expand_experiment_matrix(REAL_MATRIX, REAL_ENV)
     message = str(info.value)
     assert "training_budget.epochs is TBD" in message
-    assert "mnli_frozen_full: seeds is TBD" in message
+    assert "seeds is TBD" not in message  # fixed at the T-07a draft: core [0..4], others [0..2]
     assert "mnli_frozen_small: fusion_methods is TBD" in message
     assert "mnli_finetune_full: fusion_methods has BEST_FUSION" in message
 

@@ -64,13 +64,25 @@ def exploratory_rules(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.fixture
+def tbd_rules(tmp_path: Path) -> Path:
+    """The draft rules with the McNemar level put back to TBD (null), as before the lock."""
+    import yaml
+
+    doc = yaml.safe_load(RULES.read_text(encoding="utf-8"))
+    doc["criteria"]["mcnemar_alpha"] = None
+    path = tmp_path / "tbd_rules.yaml"
+    path.write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
+    return path
+
+
 def test_confirmatory_hypotheses_with_tbd_rules_are_refused_not_guessed(  # type: ignore[no-untyped-def]
-    runs_dir, tmp_path: Path
+    runs_dir, tbd_rules, tmp_path: Path
 ) -> None:
     out = tmp_path / "report"
     with pytest.raises(SystemExit, match="is TBD"):
         cli.main(_args(runs_dir(main=[FusionMethod.B0, FusionMethod.F2]), out,
-                       "--allow-draft-rules"))
+                       "--allow-draft-rules", rules=tbd_rules))
     assert not out.exists()
 
 

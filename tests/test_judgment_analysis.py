@@ -481,14 +481,61 @@ def test_h3_refuses_more_than_one_fine_tuned_candidate() -> None:
         judge_hypotheses(backbone_records(errors), make_rules())
 
 
-def test_h3_refuses_seed_sets_that_differ_between_the_two_backbone_conditions() -> None:
+def test_h3_judges_on_the_common_seeds_when_the_conditions_ran_different_seed_counts() -> None:
+    """T-07a: 5 frozen seeds (core) vs 3 fine-tuned seeds -> judged on the common seeds 0-2."""
     records = backbone_records(
         shrinking_effect_errors(),
-        seeds_of=lambda backbone: range(3) if backbone is FROZEN else range(2),
+        seeds_of=lambda backbone: range(5) if backbone is FROZEN else range(3),
     )
 
-    with pytest.raises(ValueError, match="seeds"):
+    h3 = judge_hypotheses(records, make_rules()).judgments["H3"]
+
+    assert h3.verdict == Verdict.SUPPORTED
+    # Seeds 0-2 only: frozen effect (60-s)/200 -> .295, fine-tuned .05, as with 3 frozen seeds.
+    assert h3.mean_diff == pytest.approx(0.245)
+    assert h3.details["n_seeds"] == 3
+    assert h3.details["seeds"] == [0, 1, 2]
+    assert h3.details["excluded_seeds"] == [3, 4]
+
+
+def test_h3_with_matching_seed_sets_excludes_no_seed() -> None:
+    h3 = judge_hypotheses(backbone_records(shrinking_effect_errors()), make_rules()).judgments["H3"]
+
+    assert h3.details["seeds"] == [0, 1, 2]
+    assert h3.details["excluded_seeds"] == []
+
+
+def test_h3_refuses_fewer_than_two_common_seeds_between_the_backbone_conditions() -> None:
+    # Frozen seeds 0-2 and fine-tuned seeds 2-4 share only seed 2: no seed std, no judgment.
+    records = backbone_records(
+        shrinking_effect_errors(),
+        seeds_of=lambda backbone: range(3) if backbone is FROZEN else range(2, 5),
+    )
+
+    with pytest.raises(ValueError, match="at least 2 common seeds"):
         judge_hypotheses(records, make_rules())
+
+
+def test_h2_judges_on_the_common_seeds_of_the_small_and_full_data_runs() -> None:
+    """T-07a: 3 small-data seeds (secondary) vs 5 full-data seeds (core) -> common seeds 0-2."""
+    errors = {
+        (SMALL, B0): lambda s: set(range(90 + s)),
+        (SMALL, F1): lambda s: set(range(30 + 2 * s)),
+        (FULL, B0): lambda s: set(range(60 + s)),
+        (FULL, F1): lambda s: set(range(40 + s)),
+    }
+    records = [
+        make_record(method, seed, errors_of(seed), n_docs=200, amount=amount)
+        for (amount, method), errors_of in errors.items()
+        for seed in (range(3) if amount is SMALL else range(5))
+    ]
+
+    h2 = judge_hypotheses(records, make_rules()).judgments["H2"]
+
+    assert h2.verdict == Verdict.SUPPORTED
+    assert h2.mean_diff == pytest.approx(0.195)  # same hand-worked numbers as the 3-seed case
+    assert h2.details["seeds"] == [0, 1, 2]
+    assert h2.details["excluded_seeds"] == [3, 4]
 
 
 # --- H5b: judged with F2 (F1 is auxiliary) -----------------------------------------------
@@ -583,7 +630,9 @@ def test_length_bucket_analysis_reports_counts_and_error_rates_per_bucket() -> N
 def test_below_min_samples_follows_the_rule_and_stays_unset_while_it_is_tbd() -> None:
     records = h5a_records(lambda s: {150}, lambda s: {150})
 
-    undecided = judge_hypotheses(records, make_rules()).length_bucket_analysis["buckets"]
+    undecided = judge_hypotheses(
+        records, make_rules(min_bucket_samples=None)
+    ).length_bucket_analysis["buckets"]
     decided = judge_hypotheses(records, make_rules(min_bucket_samples=60)).length_bucket_analysis[
         "buckets"
     ]
@@ -844,7 +893,14 @@ def test_tbd_layer_weight_rules_do_not_block_other_verdicts() -> None:
     ]
     records = h1_records + f2_records(DatasetName.MNLI, None, [20, 20, 20]) + f4_records()
 
-    report = judge_hypotheses(records, make_rules())  # include_embedding_* / thresholds are None
+    tbd_layer_weight_rules = make_rules(
+        include_embedding_in_cog=None,
+        include_embedding_in_global_denom=None,
+        seed_rank_corr_min=None,
+        cog_seed_std_max=None,
+    )
+
+    report = judge_hypotheses(records, tbd_layer_weight_rules)
 
     assert report.judgments["H1"].verdict == Verdict.SUPPORTED
     cell = report.layer_weight_analysis["mnli/full/frozen/F2/all"]

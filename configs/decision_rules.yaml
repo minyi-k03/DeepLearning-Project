@@ -1,15 +1,18 @@
 # 판정 규칙 문서 (SPEC.md §판정과 분석, ADR 0007)
 # 11/30에 모든 값을 고정하며, 본 실험 결과를 본 뒤에는 절대 변경하지 않습니다.
+# T-07a: 값은 채웠지만 두 사람(고용민·차가원) 승인 전이라 status는 draft입니다.
+# 승인 후 "locked"로 바꾸면 본 실험 판정이 시작됩니다(로더 require_locked).
 
 freeze_date: "2026-11-30"
-status: draft  # 11/30 고정 후 "locked"로 변경
+status: draft  # 두 사람 승인 후 11/30에 "locked"로 변경
 
 hypotheses:
   H1:
     type: confirmatory
     priority: 1
     description: "백본 고정 시 층 결합이 B0보다 낫다 (MNLI)"
-    target_fusion_rule: null  # TBD: F1~F4 중 대표 방식 또는 다중 비교 규칙
+    # 대표 방식 하나로 판정(F1·F3·F4는 보조 보고). H2·H4′는 이 값을 재사용한다.
+    target_fusion_rule: F2
   H3:
     type: confirmatory
     priority: 2
@@ -30,7 +33,7 @@ hypotheses:
     type: confirmatory
     priority: 6
     description: "긴 입력 자체가 효과가 있다 (IMDB)"
-    target_fusion_rule: null  # TBD: H5a를 판정할 결합 방식
+    target_fusion_rule: F2  # H1·H5b와 같은 대표 방식
   H4:
     type: exploratory
     priority: 7
@@ -41,19 +44,32 @@ hypotheses:
     description: "입력이 길수록 전역 층에 더 기댄다 (IMDB)"
 
 criteria:
-  mcnemar_alpha: null                  # TBD: McNemar 유의수준
-  multiple_comparison_correction: null # TBD: 다중 비교 보정 여부 및 방식
-  multi_seed_mcnemar_aggregation: null # TBD: 여러 시드의 문서별 예측 결합 방식
-  min_bucket_samples: null             # TBD: 길이 구간별 최소 표본 기준
-  below_min_sample_handling: null      # TBD: 최소 표본 미달 구간 표시 방식
+  mcnemar_alpha: 0.05
+  # 확증 비교가 B0 대 대표 방식(F2) 하나뿐이라 보정하지 않는다. 확증 가설 간 보정은
+  # 하지 않고 ADR 0007의 우선순위로 다룬다. null은 TBD라 문자열 "none"으로 적는다.
+  multiple_comparison_correction: none
+  # 절반을 넘는 시드가 유의해야 지지 (5시드면 3개, 3시드면 2개). 시드 간 p값은 보정하지 않는다.
+  multi_seed_mcnemar_aggregation: majority_of_seeds
+  min_bucket_samples: 100              # 길이 구간별 최소 문서 수
+  below_min_sample_handling: flag_and_keep  # 표에 남기고 below_min_samples=true로 표시, 해석 보류
   core_num_seeds: 5
   secondary_num_seeds: 3
-  core_comparisons_for_5_seeds: null   # TBD: 5시드 대상 핵심 비교 목록
-  finetune_num_seeds: null             # TBD: 파인튜닝 조건 시드 수
-  best_fusion_selection_rule: null     # TBD: 파인튜닝 조건에 쓸 "가장 좋은 결합 방식" 선정 기준
+  # 시드 목록은 중첩이다: 핵심 [0..4], 나머지·파인튜닝 [0..2] (experiment_matrix.yaml).
+  # H2·H3은 두 효과의 공통 시드(0~2)로 판정하고 사용·제외 시드를 details에 남긴다.
+  core_comparisons_for_5_seeds:        # experiment_matrix.yaml의 실험 ID
+    - mnli_frozen_full                 # H1·H4′ (B0·F1·F2·F3·F4·B0+)
+    - imdb_frozen_length               # H5a·H5b (L128·L512·Lfull × B0·F1·F2)
+  finetune_num_seeds: 3
+  # 파인튜닝 조건에 쓸 "가장 좋은 결합 방식": 백본 고정 MNLI 전체의 학습률 선택 실행(시드 0)에서
+  # 선택된 학습률의 튜닝 분할 오차율이 가장 낮은 방식을 F1~F4 중에서 고른다(B0·B0+ 제외).
+  # 동률이면 F1 < F2 < F3 < F4 순으로 앞선 쪽. 평가셋 오차율은 선정에 쓰지 않는다.
+  best_fusion_selection_rule: lowest_tuning_error_among_f1_to_f4
 
 layer_weight_interpretation:
-  include_embedding_in_cog: null       # TBD: 임베딩 벡터 가중치 처리 방식 (GLOSSARY상 층 번호 없음)
-  include_embedding_in_global_denom: null
-  seed_rank_corr_min: null             # TBD: 시드 간 순위 상관 하한
-  cog_seed_std_max: null               # TBD: 무게중심 시드 간 표준편차 상한
+  # 임베딩 벡터는 층 번호가 없고 전역·지역 어디에도 속하지 않으므로 둘 다 뺀다
+  # (무게중심은 1~22층으로 재정규화, 전역 비율의 분모에서도 제외).
+  include_embedding_in_cog: false
+  include_embedding_in_global_denom: false
+  # 아래 두 기준은 근거 문서가 없는 팀 판단값이다(관례값). 본 실험 가중치를 보고 바꾸지 않는다.
+  seed_rank_corr_min: 0.7              # 시드 쌍 스피어만 순위 상관의 평균 하한
+  cog_seed_std_max: 2.0                # 무게중심 시드 간 표준편차 상한(층 단위)

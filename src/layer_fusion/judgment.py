@@ -1028,17 +1028,25 @@ def _judge_effect_difference(
     ``rules.multi_seed_mcnemar_aggregation``. A seed counts only if both its own larger effect
     exceeds its smaller one and more documents gain more under the larger effect than the
     reverse (the two can disagree, see ``_paired_sign_test``). This operationalisation is a
-    T-07c implementation choice (SPEC §결정 필요 사항); T-07a confirms or replaces it.
+    T-07c implementation choice (SPEC §결정 필요 사항), confirmed at the T-07a lock. The effects
+    are compared on their common seeds (at least 2); ``details`` lists the seeds used and the
+    ones left out.
     """
     alpha, aggregation_name = _mcnemar_rules(rules)
     pairs_larger = _effect_by_seed(hypothesis_id, labels[0], larger)
     pairs_smaller = _effect_by_seed(hypothesis_id, labels[1], smaller)
-    if pairs_larger.keys() != pairs_smaller.keys():
+    # The two effects may have run different seed counts by design (core 5 seeds vs secondary /
+    # fine-tune 3 seeds, T-07a); the seed lists are nested, so the comparison uses the common
+    # seeds. The rule depends on the configured seed lists only, never on results.
+    seeds = sorted(pairs_larger.keys() & pairs_smaller.keys())
+    excluded_seeds = sorted(pairs_larger.keys() ^ pairs_smaller.keys())
+    if len(seeds) < 2:
         raise ValueError(
-            f"{hypothesis_id}: seeds of the {labels[0]} effect {sorted(pairs_larger)} != seeds "
-            f"of the {labels[1]} effect {sorted(pairs_smaller)}"
+            f"{hypothesis_id}: needs at least 2 common seeds between the {labels[0]} effect "
+            f"{sorted(pairs_larger)} and the {labels[1]} effect {sorted(pairs_smaller)}"
         )
-    seeds = sorted(pairs_larger)
+    pairs_larger = {seed: pairs_larger[seed] for seed in seeds}
+    pairs_smaller = {seed: pairs_smaller[seed] for seed in seeds}
 
     def effect_values(pairs: dict[int, tuple[ResultRecord, ResultRecord]]) -> list[float]:
         return [pairs[s][0].eval_error_rate - pairs[s][1].eval_error_rate for s in seeds]
@@ -1081,6 +1089,8 @@ def _judge_effect_difference(
             "aggregation": aggregation_name,
             "alpha": alpha,
             "n_seeds": len(seeds),
+            "seeds": seeds,
+            "excluded_seeds": excluded_seeds,
             "effect_mean": {labels[0]: mean_larger, labels[1]: mean_smaller},
             "effect_seed_std": {labels[0]: std_larger, labels[1]: std_smaller},
             "mean_error": {
