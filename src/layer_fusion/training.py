@@ -24,7 +24,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import torch
@@ -35,6 +35,29 @@ WEIGHT_DECAY = 0.01  # AdamW default, applied to weight matrices only
 
 class TrainingDivergedError(RuntimeError):
     """Training produced a non-finite loss and no usable model is left."""
+
+
+class EvalView(Protocol):
+    """Rows of a split the loops here read: ``RowView`` (cached layer vectors) or
+    ``finetune.TokenRowView`` (token ids padded per batch)."""
+
+    labels: np.ndarray
+    rows: np.ndarray
+
+    def __len__(self) -> int: ...
+
+    def load(self, rows: np.ndarray, device: torch.device) -> tuple[Any, torch.Tensor]: ...
+
+
+@runtime_checkable
+class LayerVectorModel(Protocol):
+    """A backbone + fusion head (``finetune.FinetuneModel``): ``layer_vectors`` turns a batch
+    into ``[B, 23, 768]`` vectors and ``head`` classifies them. Kept structural so the
+    frozen-backbone loop here never has to import the finetune module."""
+
+    head: nn.Module
+
+    def layer_vectors(self, inputs: Any) -> torch.Tensor: ...
 
 
 @dataclass(frozen=True)
@@ -100,7 +123,7 @@ def make_optimizer(head: nn.Module, lr: float) -> torch.optim.Optimizer:
 
 
 def evaluate(
-    head: nn.Module, view: RowView, batch_size: int, device: torch.device
+    head: nn.Module, view: EvalView, batch_size: int, device: torch.device
 ) -> tuple[float, float, np.ndarray]:
     """Return ``(mean cross-entropy, error rate, predictions in view order)``.
 
@@ -112,7 +135,7 @@ def evaluate(
 
 
 def evaluate_with_layer_weights(
-    model: nn.Module, view: Any, batch_size: int, device: torch.device
+    model: nn.Module, view: EvalView, batch_size: int, device: torch.device
 ) -> tuple[float, float, np.ndarray, list[list[float]] | None]:
     """``evaluate`` plus F4's per-document layer weights (``[docs][23]``, view order).
 
@@ -125,7 +148,7 @@ def evaluate_with_layer_weights(
 
 @torch.no_grad()
 def _evaluate(
-    model: nn.Module, view: Any, batch_size: int, device: torch.device, collect: bool
+    model: nn.Module, view: EvalView, batch_size: int, device: torch.device, collect: bool
 ) -> tuple[float, float, np.ndarray, list[list[float]] | None]:
     from layer_fusion.fusion import extract_document_layer_weights
 
@@ -133,7 +156,7 @@ def _evaluate(
         raise ValueError("cannot evaluate an empty split")
     model.eval()
     # FinetuneModel: backbone -> layer vectors -> fusion head; a bare head takes the vectors.
-    finetune = hasattr(model, "layer_vectors") and hasattr(model, "head")
+    finetune = isinstance(model, LayerVectorModel)
     head = model.head if finetune else model
     total_loss = torch.zeros((), device=device)
     predictions = np.empty(len(view), dtype=np.int64)
@@ -160,8 +183,8 @@ def _evaluate(
 
 def train_head(
     make_head: Callable[[], nn.Module],
-    train_view: RowView,
-    tuning_view: RowView,
+    train_view: EvalView,
+    tuning_view: EvalView,
     *,
     lr: float,
     epochs: int,

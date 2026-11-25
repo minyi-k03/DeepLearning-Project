@@ -506,12 +506,13 @@ def test_other_records_have_no_per_document_layer_weights(  # type: ignore[no-un
 def test_prediction_records_pair_each_document_with_its_own_weights(  # type: ignore[no-untyped-def]
     noisy_provider, make_run_config
 ) -> None:
+    from layer_fusion.layers import NUM_LAYER_VECTORS
     from layer_fusion.runner import prediction_records
 
     provider = noisy_provider(eval_size=4)
     batch = provider.get_split("eval")
     config = make_run_config(provider, fusion_method=FusionMethod.F4)
-    weights = [[float(i)] * 23 for i in range(4)]
+    weights = [[float(i)] * NUM_LAYER_VECTORS for i in range(4)]
     records = prediction_records(batch, np.zeros(4, dtype=np.int64), config, weights)
     assert [(r.doc_id, r.layer_weights[0]) for r in records] == [
         (doc_id, float(i)) for i, doc_id in enumerate(batch.doc_ids)

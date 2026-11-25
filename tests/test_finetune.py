@@ -457,3 +457,15 @@ def test_finetune_f4_record_carries_per_document_layer_weights() -> None:
     assert weights.shape == (30, NUM_LAYER_VECTORS)
     np.testing.assert_allclose(weights.sum(axis=1), 1.0, atol=1e-5)
     assert record.layer_weights is None
+
+
+def test_only_a_backbone_plus_head_model_is_evaluated_through_its_layer_vectors() -> None:
+    """evaluate_with_layer_weights reuses layer vectors only for FinetuneModel-shaped models;
+    a bare fusion head (frozen backbone) or the paper head is called directly."""
+    from layer_fusion.finetune import PaperHeadModel
+    from layer_fusion.training import LayerVectorModel
+
+    assert isinstance(FinetuneModel(FakeBackbone(), build_fusion_head(FusionMethod.F4, 3)),
+                      LayerVectorModel)
+    assert not isinstance(build_fusion_head(FusionMethod.F4, 3), LayerVectorModel)
+    assert not isinstance(PaperHeadModel(nn.Linear(2, 2)), LayerVectorModel)
