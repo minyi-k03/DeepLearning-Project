@@ -344,7 +344,8 @@ def test_run_id_is_deterministic(noisy_provider, make_run_config) -> None:  # ty
         ({"fixed_lr": 0.5, "lr_selection_seed": 0}, ValueError),  # not a candidate
         ({"fixed_lr": 1e-3}, ValueError),  # missing lr_selection_seed
         ({"lr_selection_seed": 0}, ValueError),  # seed without fixed_lr
-        ({"backbone_condition": BackboneCondition.FINETUNE}, NotImplementedError),  # T-06d
+        # A cache has no trainable backbone: finetune needs a BackboneProvider (T-06d).
+        ({"backbone_condition": BackboneCondition.FINETUNE}, ValueError),
     ],
 )
 def test_incomplete_or_inconsistent_budget_is_rejected(
