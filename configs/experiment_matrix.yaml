@@ -19,7 +19,7 @@ experiments:
     backbone_condition: frozen
     data_amount: small  # 클래스당 1,000건
     input_setting: null
-    fusion_methods: null  # TBD (구현 단계에서 확정)
+    fusion_methods: [B0, F1, F2]  # 11/25 결정 안건 B: H2는 B0·F2(H1 대표 방식), F1은 섞기 효과
     layer_subset: all
     hypotheses: [H2]
     seeds: [0, 1, 2]
@@ -39,7 +39,7 @@ experiments:
     backbone_condition: frozen
     data_amount: full
     input_setting: null
-    fusion_methods: null  # TBD (층 가중치 비교에 F2 필수 포함)
+    fusion_methods: [B0, F1, F2]  # 11/25 결정 안건 B: H4는 F2 층 가중치 비교, B0·F1은 오차율 기준선
     layer_subset: all
     hypotheses: [H4]
     seeds: [0, 1, 2]

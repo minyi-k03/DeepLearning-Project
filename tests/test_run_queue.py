@@ -331,11 +331,13 @@ cli = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cli)
 
 
-def test_cli_main_queue_with_tbd_matrix_is_refused_before_the_lock(tmp_path: Path) -> None:
+def test_cli_main_queue_with_tbd_matrix_is_refused_before_the_lock(
+    tmp_path: Path, tbd_env: Path
+) -> None:
     lock = tmp_path / "main_queue.lock"
     with pytest.raises(SystemExit, match="TBD"):
         cli.main(["--experiments", "mnli_frozen_full", "--lock-file", str(lock),
-                  "--output-dir", str(tmp_path / "runs")])
+                  "--env-config", str(tbd_env), "--output-dir", str(tmp_path / "runs")])
     assert not lock.exists()
 
 

@@ -84,14 +84,34 @@ def test_real_config_files_are_refused_while_values_are_tbd() -> None:
     message = str(info.value)
     assert "training_budget.epochs is TBD" in message
     assert "seeds is TBD" not in message  # fixed at the T-07a draft: core [0..4], others [0..2]
-    assert "mnli_frozen_small: fusion_methods is TBD" in message
+    assert "fusion_methods is TBD" not in message  # agenda B (11/25): small and SST-2 lists
+    assert "lr_candidates is TBD" not in message  # agenda A (11/25): both candidate lists
     assert "mnli_finetune_full: fusion_methods has BEST_FUSION" in message
 
 
 def test_real_budget_is_read_as_tbd() -> None:
+    # epochs / early stopping / batch wait for the metis timing run (agenda A)
     assert load_training_budget(REAL_ENV).missing() == [
-        "lr_candidates", "epochs", "early_stopping_patience", "batch_size",
+        "epochs", "early_stopping_patience", "batch_size",
     ]
+
+
+def test_real_config_holds_the_agenda_a_and_b_values() -> None:
+    """11/25 decisions: LR candidates (agenda A) and the small / SST-2 fusion lists (agenda B)."""
+    budget = load_training_budget(REAL_ENV)
+    assert budget.lr_candidates == (1e-4, 1e-3, 1e-2)
+    assert budget.finetune_lr_candidates == (2e-5, 5e-5, 8e-5)
+    experiments = {
+        exp["id"]: exp
+        for exp in yaml.safe_load(REAL_MATRIX.read_text(encoding="utf-8"))["experiments"]
+    }
+    assert experiments["mnli_frozen_small"]["fusion_methods"] == ["B0", "F1", "F2"]
+    assert experiments["sst2_frozen_full"]["fusion_methods"] == ["B0", "F1", "F2"]
+    rules = yaml.safe_load((ROOT / "configs" / "decision_rules.yaml").read_text(encoding="utf-8"))
+    h1_target = rules["hypotheses"]["H1"]["target_fusion_rule"]
+    # H2 compares the small and full effects of the H1 method against B0
+    assert {"B0", h1_target} <= set(experiments["mnli_frozen_small"]["fusion_methods"])
+    assert "F2" in experiments["sst2_frozen_full"]["fusion_methods"]  # H4 compares F2 weights
 
 
 def test_expansion_order_and_fields(tmp_path: Path) -> None:
@@ -239,7 +259,7 @@ def test_finetune_settings_take_the_finetune_lr_candidates_and_float32_meta(
 
 
 def test_finetune_lr_candidates_tbd_blocks_only_finetune_experiments(tmp_path: Path) -> None:
-    env = _env_file(tmp_path, **BUDGET)  # finetune_lr_candidates stays null in the real file
+    env = _env_file(tmp_path, **BUDGET, finetune_lr_candidates=None)  # TBD on purpose
     assert expand_experiment_matrix(_matrix_file(tmp_path, [MNLI]), env)
     with pytest.raises(ValueError, match="training_budget.finetune_lr_candidates is TBD"):
         expand_experiment_matrix(_matrix_file(tmp_path, [MNLI, MNLI_FINETUNE]), env)
