@@ -211,9 +211,20 @@ def _training_rows(
 
 
 def prediction_records(
-    eval_batch: LayerVectorBatch | TokenBatch, predicted: np.ndarray, config: RunConfig
+    eval_batch: LayerVectorBatch | TokenBatch,
+    predicted: np.ndarray,
+    config: RunConfig,
+    layer_weights: list[list[float]] | None = None,
 ) -> list[PredictionRecord]:
-    """One PredictionRecord per eval document, in eval order (shared with T-06e)."""
+    """One PredictionRecord per eval document, in eval order (shared with T-06e).
+
+    ``layer_weights`` are F4's per-document layer weights in the same order (SPEC module 6).
+    """
+    if layer_weights is not None and len(layer_weights) != len(eval_batch.doc_ids):
+        raise ValueError(
+            f"{len(layer_weights)} per-document layer weights for "
+            f"{len(eval_batch.doc_ids)} eval documents"
+        )
     token_lengths = eval_batch.token_lengths
     genres = eval_batch.genre_splits
     labels = np.asarray(eval_batch.labels)
@@ -229,6 +240,7 @@ def prediction_records(
                 else None
             ),
             genre_split=None if genres is None else genres[i],
+            layer_weights=None if layer_weights is None else list(layer_weights[i]),
         )
         for i, doc_id in enumerate(eval_batch.doc_ids)
     ]
@@ -300,7 +312,12 @@ def run_experiment(
         count_trainable_parameters,
         extract_layer_weights,
     )
-    from layer_fusion.training import RowView, TrainingDivergedError, evaluate, train_head
+    from layer_fusion.training import (
+        RowView,
+        TrainingDivergedError,
+        evaluate_with_layer_weights,
+        train_head,
+    )
 
     finetune = config.backbone_condition == BackboneCondition.FINETUNE
     if finetune:
@@ -379,12 +396,14 @@ def run_experiment(
             candidate.head = None  # drop the other candidates' models
 
     eval_view = view(eval_batch, np.arange(len(eval_batch.doc_ids), dtype=np.int64))
-    eval_loss, eval_error, predicted = evaluate(head, eval_view, config.batch_size, torch_device)
+    eval_loss, eval_error, predicted, doc_weights = evaluate_with_layer_weights(
+        head, eval_view, config.batch_size, torch_device
+    )
     if not math.isfinite(eval_loss):
         raise ValueError("eval loss is not finite (non-finite eval vectors?)")
 
     token_lengths = eval_batch.token_lengths
-    predictions = prediction_records(eval_batch, predicted, config)
+    predictions = prediction_records(eval_batch, predicted, config, doc_weights)
     matched, mismatched = genre_error_rates(predictions, config)
 
     metadata = provider.metadata
