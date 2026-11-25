@@ -11,6 +11,11 @@ Debug queue (no lock, recorded as debug; seeds, budget and fusion methods on the
         --seeds 0 1 --fusion-methods B0 F2 --lr-candidates 1e-3 --epochs 1 \\
         --early-stopping-patience 1 --batch-size 32
 
+Fine-tune queue (T-08f): ``BEST_FUSION`` is chosen from the MNLI frozen-full selection runs by
+the decision rule (main queues need ``status: locked`` rules; debug queues read debug records):
+
+    python scripts/run_queue.py --experiments mnli_finetune_full --best-fusion-from results/runs
+
 ``--dry-run`` prints the order (and which records already exist) without running anything.
 Order: MNLI > SST-2 > IMDB. Existing records are skipped, so rerunning the same command
 resumes an interrupted queue; the first failing run stops it.
@@ -23,7 +28,7 @@ import sys
 from collections.abc import Sequence
 
 from layer_fusion.contracts import MAIN_FUSION_METHODS, FusionMethod, RunConfig, RunKind
-from layer_fusion.matrix import TrainingBudget, expand_experiment_matrix
+from layer_fusion.matrix import TrainingBudget, expand_experiment_matrix, select_best_fusion
 from layer_fusion.records import record_path
 from layer_fusion.run_queue import (
     DEFAULT_LOCK_PATH,
@@ -63,6 +68,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--debug", action="store_true", help="debug queue: no GPU lock, recorded as debug"
     )
+    parser.add_argument(
+        "--best-fusion-from",
+        default=None,
+        help="runs dir of the MNLI frozen-full results; fills BEST_FUSION by the decision rule",
+    )
+    parser.add_argument("--rules", default="configs/decision_rules.yaml")
     debug = parser.add_argument_group("debug-only overrides")
     debug.add_argument("--seeds", type=int, nargs="+", default=None)
     debug.add_argument(
@@ -106,12 +117,34 @@ def build_queue(args: argparse.Namespace) -> list[RunConfig]:
         seeds=args.seeds,
         run_kind=run_kind,
         budget_overrides=None if overrides.is_empty() else overrides,
+        best_fusion=_best_fusion(args, run_kind),
     )
     if args.fusion_methods is not None:
         keep = {FusionMethod(m) for m in args.fusion_methods}
         configs = [c for c in configs if c.fusion_method in keep]
     check_queue(configs)
     return order_by_priority(configs)
+
+
+def _best_fusion(args: argparse.Namespace, run_kind: RunKind) -> FusionMethod | None:
+    """The method BEST_FUSION stands for, chosen by the decision rule (or None)."""
+    if args.best_fusion_from is None:
+        return None
+    from layer_fusion.judgment import load_decision_rules
+    from layer_fusion.records import load_result_records
+
+    try:
+        records = load_result_records(args.best_fusion_from)
+    except FileNotFoundError as exc:
+        raise ValueError(str(exc)) from exc
+    rules = load_decision_rules(args.rules, require_locked=run_kind is RunKind.MAIN)
+    choice = select_best_fusion(records, rules.best_fusion_selection_rule, run_kind=run_kind)
+    scores = ", ".join(f"{m.value} {s:.4f}" for m, s in choice.scores.items())
+    print(
+        f"[best-fusion] {choice.method.value} ({rules.best_fusion_selection_rule}; "
+        f"tuning error at the selected LR: {scores})"
+    )
+    return choice.method
 
 
 def main(argv: Sequence[str] | None = None) -> int:

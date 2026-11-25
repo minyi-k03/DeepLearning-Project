@@ -10,16 +10,21 @@ import yaml
 
 from layer_fusion.cache_build import load_env_config
 from layer_fusion.contracts import (
+    DataAmount,
+    DatasetName,
     FusionMethod,
     InputSetting,
     LayerSubset,
     ResultRecord,
     RunKind,
+    TrackKind,
 )
 from layer_fusion.matrix import (
+    BEST_FUSION_RULE,
     TrainingBudget,
     expand_experiment_matrix,
     load_training_budget,
+    select_best_fusion,
     with_selected_lr,
 )
 
@@ -243,3 +248,121 @@ def test_finetune_lr_candidates_tbd_blocks_only_finetune_experiments(tmp_path: P
     assert expand_experiment_matrix(_matrix_file(tmp_path, [MNLI]), env)
     with pytest.raises(ValueError, match="training_budget.finetune_lr_candidates is TBD"):
         expand_experiment_matrix(_matrix_file(tmp_path, [MNLI, MNLI_FINETUNE]), env)
+
+
+# --- BEST_FUSION: the fine-tune comparison method chosen by the T-07a rule (before T-08f) ----
+
+ALL_METHODS = ["B0", "F1", "F2", "F3", "F4", "B0+"]
+
+
+def _frozen_records(tmp_path: Path, scores: dict[str, float], kind: RunKind = RunKind.MAIN):  # type: ignore[no-untyped-def]
+    """MNLI frozen-full records: a selection run (seed 0) whose selected LR scored ``scores``
+    on the tuning split, plus a reuse run (seed 1) with a tempting low eval error rate."""
+    matrix = _matrix_file(tmp_path, [{**MNLI, "fusion_methods": ALL_METHODS, "seeds": [0, 1]}])
+    configs = expand_experiment_matrix(
+        matrix, _env_file(tmp_path, **BUDGET), run_kind=kind,
+        **({"seeds": [0, 1]} if kind is RunKind.DEBUG else {}),
+    )
+    records = []
+    for config in configs:
+        method = config.fusion_method.value
+        if config.seed == 0:
+            records.append(ResultRecord(
+                run_id=f"{method}-s0", config=config, selected_lr=1e-3,
+                lr_tuning_scores={1e-4: 0.9, 1e-3: scores.get(method, 0.5), 1e-2: 0.95},
+                eval_error_rate=0.4, predictions=[], trainable_params=1, train_seconds=1.0,
+            ))
+    for sel in list(records):
+        reuse = with_selected_lr(replace(sel.config, seed=1), sel)
+        records.append(ResultRecord(
+            run_id=f"{sel.config.fusion_method.value}-s1", config=reuse, selected_lr=1e-3,
+            lr_tuning_scores={}, eval_error_rate=0.01, predictions=[], trainable_params=1,
+            train_seconds=1.0,
+        ))
+    return records
+
+
+def test_best_fusion_is_the_lowest_tuning_error_of_the_selection_runs(tmp_path: Path) -> None:
+    records = _frozen_records(tmp_path, {"F1": 0.30, "F2": 0.25, "F3": 0.20, "F4": 0.22})
+    # a lower eval error rate elsewhere never decides (the eval set is not used to choose)
+    records = [replace(r, eval_error_rate=0.0) if r.run_id == "F1-s0" else r for r in records]
+    choice = select_best_fusion(records, BEST_FUSION_RULE)
+    assert choice.method is FusionMethod.F3
+    assert choice.scores == {FusionMethod.F1: 0.30, FusionMethod.F2: 0.25,
+                             FusionMethod.F3: 0.20, FusionMethod.F4: 0.22}
+    assert choice.run_ids == {FusionMethod.F1: "F1-s0", FusionMethod.F2: "F2-s0",
+                              FusionMethod.F3: "F3-s0", FusionMethod.F4: "F4-s0"}
+
+
+def test_best_fusion_tie_goes_to_the_lower_number_and_divergence_never_wins(
+    tmp_path: Path,
+) -> None:
+    tie = _frozen_records(tmp_path, {"F1": 0.3, "F2": 0.2, "F3": 0.2, "F4": 0.2})
+    assert select_best_fusion(tie, BEST_FUSION_RULE).method is FusionMethod.F2
+    inf = float("inf")
+    diverged = _frozen_records(tmp_path, {"F1": inf, "F2": 0.4, "F3": inf, "F4": 0.3})
+    assert select_best_fusion(diverged, BEST_FUSION_RULE).method is FusionMethod.F4
+    all_diverged = _frozen_records(tmp_path, {m: inf for m in ("F1", "F2", "F3", "F4")})
+    with pytest.raises(ValueError, match="diverged"):
+        select_best_fusion(all_diverged, BEST_FUSION_RULE)
+
+
+def test_best_fusion_ignores_b0_b0plus_and_records_outside_the_main_frozen_mnli_cell(
+    tmp_path: Path,
+) -> None:
+    records = _frozen_records(tmp_path, {"B0": 0.0, "B0+": 0.0, "F1": 0.3, "F2": 0.2,
+                                         "F3": 0.25, "F4": 0.4})
+    f1 = next(r for r in records if r.run_id == "F1-s0")
+    outsiders = [
+        replace(f1, run_id="debug", config=replace(f1.config, run_kind=RunKind.DEBUG),
+                lr_tuning_scores={1e-3: 0.0}),
+        replace(f1, run_id="repro", config=replace(f1.config, track=TrackKind.REPRODUCTION),
+                lr_tuning_scores={1e-3: 0.0}),
+        replace(f1, run_id="small", config=replace(f1.config, data_amount=DataAmount.SMALL),
+                lr_tuning_scores={1e-3: 0.0}),
+        replace(f1, run_id="sst2", config=replace(f1.config, dataset=DatasetName.SST2),
+                lr_tuning_scores={1e-3: 0.0}),
+    ]
+    assert select_best_fusion(records + outsiders, BEST_FUSION_RULE).method is FusionMethod.F2
+
+
+def test_debug_selection_reads_debug_records_only(tmp_path: Path) -> None:
+    main = _frozen_records(tmp_path, {"F1": 0.1, "F2": 0.3, "F3": 0.3, "F4": 0.3})
+    debug = _frozen_records(tmp_path, {"F1": 0.3, "F2": 0.3, "F3": 0.1, "F4": 0.3}, RunKind.DEBUG)
+    both = main + debug
+    assert select_best_fusion(both, BEST_FUSION_RULE).method is FusionMethod.F1
+    chosen = select_best_fusion(both, BEST_FUSION_RULE, run_kind=RunKind.DEBUG)
+    assert chosen.method is FusionMethod.F3
+
+
+def test_best_fusion_refuses_incomplete_or_doubled_selection_runs(tmp_path: Path) -> None:
+    records = _frozen_records(tmp_path, {"F1": 0.3, "F2": 0.2, "F3": 0.25, "F4": 0.4})
+    without_f3 = [r for r in records if r.config.fusion_method is not FusionMethod.F3]
+    with pytest.raises(ValueError, match="F3"):
+        select_best_fusion(without_f3, BEST_FUSION_RULE)
+    f2 = next(r for r in records if r.run_id == "F2-s0")
+    doubled = records + [replace(f2, run_id="F2-s0-again")]
+    with pytest.raises(ValueError, match="F2"):
+        select_best_fusion(doubled, BEST_FUSION_RULE)
+
+
+@pytest.mark.parametrize(("rule", "match"), [(None, "TBD"), ("lowest_eval_error", "unknown")])
+def test_best_fusion_rule_must_be_the_known_one(tmp_path: Path, rule, match) -> None:  # type: ignore[no-untyped-def]
+    records = _frozen_records(tmp_path, {"F1": 0.3, "F2": 0.2, "F3": 0.25, "F4": 0.4})
+    with pytest.raises(ValueError, match=match):
+        select_best_fusion(records, rule)
+
+
+def test_best_fusion_fills_the_placeholder_only_with_a_fusion_method(tmp_path: Path) -> None:
+    env = _env_file(tmp_path, **BUDGET, finetune_lr_candidates=[1e-5, 2e-5, 5e-5])
+    finetune = {**MNLI_FINETUNE, "fusion_methods": ["B0", "BEST_FUSION"], "seeds": [0, 1]}
+    matrix = _matrix_file(tmp_path, [finetune])
+    with pytest.raises(ValueError, match="BEST_FUSION"):
+        expand_experiment_matrix(matrix, env)
+    configs = expand_experiment_matrix(matrix, env, best_fusion=FusionMethod.F3)
+    assert [(c.fusion_method, c.seed) for c in configs] == [
+        (FusionMethod.B0, 0), (FusionMethod.B0, 1), (FusionMethod.F3, 0), (FusionMethod.F3, 1)
+    ]
+    for wrong in (FusionMethod.B0, FusionMethod.B0_PLUS):
+        with pytest.raises(ValueError, match="F1 to F4"):
+            expand_experiment_matrix(matrix, env, best_fusion=wrong)
