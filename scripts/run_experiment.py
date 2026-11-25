@@ -30,6 +30,7 @@ from pathlib import Path
 
 from layer_fusion.cache_build import cache_name
 from layer_fusion.contracts import (
+    MAIN_FUSION_METHODS,
     BackboneCondition,
     DataAmount,
     DatasetName,
@@ -53,7 +54,9 @@ DEFAULT_CACHE_ROOT = Path("data/cache")
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a single layer-fusion experiment.")
     parser.add_argument("--dataset", required=True, choices=[d.value for d in DatasetName])
-    parser.add_argument("--fusion", required=True, choices=[m.value for m in FusionMethod])
+    parser.add_argument(
+        "--fusion", required=True, choices=[m.value for m in MAIN_FUSION_METHODS]
+    )
     parser.add_argument(
         "--backbone", default="frozen", choices=[b.value for b in BackboneCondition]
     )

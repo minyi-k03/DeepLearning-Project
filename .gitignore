@@ -32,6 +32,7 @@ results/reports/*
 !results/reports/.gitkeep
 results/reproduction/*
 !results/reproduction/.gitkeep
+results/debug_runs/
 *.pt
 *.pth
 *.safetensors

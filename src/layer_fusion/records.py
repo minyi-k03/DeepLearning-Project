@@ -21,7 +21,7 @@ import math
 import os
 import tempfile
 from collections.abc import Sequence
-from dataclasses import fields, replace
+from dataclasses import asdict, fields, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,7 @@ from layer_fusion.contracts import (
     LayerSubset,
     LengthBucket,
     PredictionRecord,
+    ReproductionSettings,
     ResultRecord,
     RunConfig,
     RunKind,
@@ -45,6 +46,7 @@ from layer_fusion.contracts import (
 from layer_fusion.providers import cache_metadata_from_dict, cache_metadata_to_dict
 
 RECORD_FORMAT = 1
+_ADDED_RUN_CONFIG_FIELD = "reproduction"  # optional in records written before T-06e
 RECORD_SUFFIX = ".json"
 _INF = "inf"
 
@@ -81,12 +83,20 @@ def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
             value = list(value)
         elif f.name == "expected_cache_meta" and value is not None:
             value = cache_metadata_to_dict(value)
+        elif f.name == _ADDED_RUN_CONFIG_FIELD and value is not None:
+            value = asdict(value)
         data[f.name] = value
     return data
 
 
 def run_config_from_dict(data: dict[str, Any]) -> RunConfig:
-    """Inverse of :func:`run_config_to_dict`."""
+    """Inverse of :func:`run_config_to_dict`.
+
+    ``reproduction`` was added after record format 1 was first written (T-06e); a record
+    without it is a main-track record and reads as ``None``.
+    """
+    if isinstance(data, dict):
+        data = {_ADDED_RUN_CONFIG_FIELD: None, **data}
     _check_keys(data, RunConfig, "RunConfig")
     values = dict(data)
     for name, enum_cls in _RUN_CONFIG_ENUMS.items():
@@ -95,6 +105,10 @@ def run_config_from_dict(data: dict[str, Any]) -> RunConfig:
     values["lr_candidates"] = tuple(float(lr) for lr in values["lr_candidates"])
     if values["expected_cache_meta"] is not None:
         values["expected_cache_meta"] = cache_metadata_from_dict(values["expected_cache_meta"])
+    settings = values[_ADDED_RUN_CONFIG_FIELD]
+    if settings is not None:
+        _check_keys(settings, ReproductionSettings, "RunConfig.reproduction")
+        values[_ADDED_RUN_CONFIG_FIELD] = ReproductionSettings(**settings)
     return RunConfig(**values)
 
 
@@ -208,11 +222,22 @@ def save_result_record(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text + "\n")
+        # mkstemp creates the file 0600; give it the mode a plain open() would, so records
+        # written as root in the container stay readable from the host account. POSIX only:
+        # Windows has no umask, and reading it briefly changes process-wide state.
+        if os.name == "posix":
+            os.chmod(tmp_name, 0o666 & ~_current_umask())
         os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise
     return path
+
+
+def _current_umask() -> int:
+    mask = os.umask(0)  # the umask can only be read by setting it
+    os.umask(mask)
+    return mask
 
 
 def _reject_json_constant(value: str) -> None:

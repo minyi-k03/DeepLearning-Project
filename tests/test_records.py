@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -112,6 +113,17 @@ def test_debug_record_may_be_overwritten(diverged_record, tmp_path: Path) -> Non
     changed = replace(debug, eval_error_rate=0.5)
     path = save_result_record(changed, tmp_path, overwrite=True)
     assert load_result_record(path).eval_error_rate == 0.5
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_saved_record_follows_the_umask(diverged_record, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    # Records written as root inside the container must stay readable from the host account.
+    old = os.umask(0o022)
+    try:
+        path = save_result_record(diverged_record, tmp_path)
+    finally:
+        os.umask(old)
+    assert path.stat().st_mode & 0o777 == 0o644
 
 
 def test_non_finite_value_fails_the_save(diverged_record, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]

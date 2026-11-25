@@ -1,4 +1,4 @@
-"""Execution seam, sequential queue runner, and reproduction track runner.
+"""Execution seam (frozen backbone and finetune conditions).
 
 References: docs/SPEC.md, ADR 0004, ADR 0009.
 """
@@ -6,7 +6,6 @@ References: docs/SPEC.md, ADR 0004, ADR 0009.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,6 +16,7 @@ from layer_fusion.contracts import (
     DataAmount,
     DatasetName,
     DocumentRecord,
+    FusionMethod,
     PredictionRecord,
     ResultRecord,
     RunConfig,
@@ -116,8 +116,13 @@ def _check_run_inputs(config: RunConfig, eval_batch: LayerVectorBatch | TokenBat
     """Reject settings and eval splits that would silently drop report fields (PR #15 review)."""
     if config.track == TrackKind.REPRODUCTION:
         raise ValueError(
-            "run_experiment is the main-track frozen seam; the reproduction track runs through "
-            "run_reproduction_track (ADR 0004)"
+            "run_experiment is the main-track seam; the reproduction track runs through "
+            "reproduction.run_reproduction (ADR 0004, T-06e)"
+        )
+    if config.fusion_method == FusionMethod.PAPER_HEAD:
+        raise ValueError(
+            "paper_head is the reproduction track's classification head (ADR 0004); main runs "
+            "use a fusion method B0/F1/F2/F3/F4/B0+"
         )
     if config.dataset == DatasetName.IMDB:
         if config.input_setting is None:
@@ -203,6 +208,39 @@ def _training_rows(
     train_rows = np.sort(np.fromiter((row_of[r.doc_id] for r in train_part), dtype=np.int64))
     tuning_rows = np.sort(np.fromiter((row_of[r.doc_id] for r in tuning), dtype=np.int64))
     return train_rows, tuning_rows, small_ids
+
+
+def prediction_records(
+    eval_batch: LayerVectorBatch | TokenBatch, predicted: np.ndarray, config: RunConfig
+) -> list[PredictionRecord]:
+    """One PredictionRecord per eval document, in eval order (shared with T-06e)."""
+    token_lengths = eval_batch.token_lengths
+    genres = eval_batch.genre_splits
+    labels = np.asarray(eval_batch.labels)
+    return [
+        PredictionRecord(
+            doc_id=doc_id,
+            label=int(labels[i]),
+            prediction=int(predicted[i]),
+            token_length=None if token_lengths is None else int(token_lengths[i]),
+            length_bucket=(
+                assign_length_bucket(int(token_lengths[i]))
+                if token_lengths is not None and config.input_setting is not None
+                else None
+            ),
+            genre_split=None if genres is None else genres[i],
+        )
+        for i, doc_id in enumerate(eval_batch.doc_ids)
+    ]
+
+
+def genre_error_rates(
+    predictions: list[PredictionRecord], config: RunConfig
+) -> tuple[float | None, float | None]:
+    """(matched, mismatched) error rates for MNLI, ``(None, None)`` otherwise."""
+    if config.dataset != DatasetName.MNLI:
+        return None, None
+    return _mnli_genre_error_rates(predictions)
 
 
 def _mnli_genre_error_rates(
@@ -346,27 +384,8 @@ def run_experiment(
         raise ValueError("eval loss is not finite (non-finite eval vectors?)")
 
     token_lengths = eval_batch.token_lengths
-    genres = eval_batch.genre_splits
-    labels = np.asarray(eval_batch.labels)
-    predictions = [
-        PredictionRecord(
-            doc_id=doc_id,
-            label=int(labels[i]),
-            prediction=int(predicted[i]),
-            token_length=None if token_lengths is None else int(token_lengths[i]),
-            length_bucket=(
-                assign_length_bucket(int(token_lengths[i]))
-                if token_lengths is not None and config.input_setting is not None
-                else None
-            ),
-            genre_split=None if genres is None else genres[i],
-        )
-        for i, doc_id in enumerate(eval_batch.doc_ids)
-    ]
-
-    matched = mismatched = None
-    if config.dataset == DatasetName.MNLI:
-        matched, mismatched = _mnli_genre_error_rates(predictions)
+    predictions = prediction_records(eval_batch, predicted, config)
+    matched, mismatched = genre_error_rates(predictions, config)
 
     metadata = provider.metadata
     truncated_doc_ratio = None
@@ -399,12 +418,3 @@ def run_experiment(
         lr_search_seconds=lr_search_seconds,
         tuning_eval_seconds=outcome.tuning_eval_seconds,
     )
-
-
-def run_reproduction_track(
-    dataset: str,
-    seeds: Sequence[int],
-    output_dir: str,
-) -> list[ResultRecord]:
-    """Run paper fine-tuning reproduction track (MNLI 89.1 / SST-2 96.0, x3 runs, ADR 0004)."""
-    raise NotImplementedError("TODO: Implement reproduction track runner (T-06/T-08)")
