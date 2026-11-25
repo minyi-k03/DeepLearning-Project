@@ -19,7 +19,7 @@ experiments:
     backbone_condition: frozen
     data_amount: small  # 클래스당 1,000건
     input_setting: null
-    fusion_methods: null  # TBD (구현 단계에서 확정)
+    fusion_methods: [B0, F1, F2]  # 11/25 결정 안건 B: H2는 B0·F2(H1 대표 방식), F1은 섞기 효과
     layer_subset: all
     hypotheses: [H2]
     seeds: [0, 1, 2]
@@ -39,7 +39,7 @@ experiments:
     backbone_condition: frozen
     data_amount: full
     input_setting: null
-    fusion_methods: null  # TBD (층 가중치 비교에 F2 필수 포함)
+    fusion_methods: [B0, F1, F2]  # 11/25 결정 안건 B: H4는 F2 층 가중치 비교, B0·F1은 오차율 기준선
     layer_subset: all
     hypotheses: [H4]
     seeds: [0, 1, 2]
@@ -77,7 +77,8 @@ experiments:
 reproduction_track:
   # 본 실험 결과표와 분리됨 (ADR 0004). 학습률·가중치 감쇠·에폭은 논문 값
   # (arXiv 2412.13663v2 부록 E.1 Table 6, ModernBERT-base, PDF 원문 확인, T-06e).
-  # batch_size·warmup_ratio·lr_scheduler·seeds는 논문에 없어 미정(null) — 11/30 전 팀 결정.
+  # batch_size·warmup_ratio·lr_scheduler·seeds는 논문에 없어 팀이 정한 관행 값(논문 값 아님,
+  # 11/25 결정 안건 C, SPEC §결정 필요 사항). 보고서 한계 절에 적는다.
   - id: repro_mnli
     dataset: mnli
     track: reproduction
@@ -89,10 +90,10 @@ reproduction_track:
     lr: 5.0e-5
     weight_decay: 5.0e-6
     epochs: 1
-    batch_size: null
-    warmup_ratio: null
-    lr_scheduler: null
-    seeds: null
+    batch_size: 32
+    warmup_ratio: 0.06
+    lr_scheduler: linear
+    seeds: [0, 1, 2]
 
   - id: repro_sst2
     dataset: sst2
@@ -105,7 +106,7 @@ reproduction_track:
     lr: 8.0e-5
     weight_decay: 1.0e-5
     epochs: 2
-    batch_size: null
-    warmup_ratio: null
-    lr_scheduler: null
-    seeds: null
+    batch_size: 32
+    warmup_ratio: 0.06
+    lr_scheduler: linear
+    seeds: [0, 1, 2]

@@ -342,11 +342,13 @@ def test_cli_finetune_debug_run_writes_a_record(tmp_path: Path, monkeypatch) -> 
     assert record.config.run_kind is RunKind.DEBUG
 
 
-def test_cli_finetune_lr_candidates_are_required(tmp_path: Path) -> None:
+def test_cli_finetune_lr_candidates_are_required(tmp_path: Path, tbd_env: Path) -> None:
     args = [a for a in _cli_args(tmp_path / "runs") if a not in {"--finetune-lr-candidates"}]
     args.remove("1e-2")
+    # TBD env on purpose: with the real (filled) file this would start a real fine-tune run
     with pytest.raises(SystemExit, match="finetune_lr_candidates"):
-        cli.main(args)
+        cli.main([*args, "--env-config", str(tbd_env)])
+    assert not (tmp_path / "runs").exists()
 
 
 def test_cli_limit_is_refused_for_frozen_runs(tmp_path: Path) -> None:

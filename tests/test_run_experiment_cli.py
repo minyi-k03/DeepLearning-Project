@@ -107,12 +107,14 @@ def test_main_runs_are_refused_here(cache_dir: Path, tmp_path: Path) -> None:
     assert not (tmp_path / "runs").exists()
 
 
-def test_tbd_budget_must_be_passed_on_the_command_line(cache_dir: Path, tmp_path: Path) -> None:
-    """week1_env.yaml has the budget as TBD today, so it must come from the command line."""
+def test_tbd_budget_must_be_passed_on_the_command_line(  # type: ignore[no-untyped-def]
+    cache_dir: Path, tmp_path: Path, tbd_env: Path
+) -> None:
+    """A budget that is TBD in the env file must come from the command line."""
     args = [
         "--dataset", "mnli", "--fusion", "F2", "--seed", "0",
         "--cache-dir", str(cache_dir), "--output-dir", str(tmp_path / "runs"),
-        "--env-config", str(ROOT / "configs" / "week1_env.yaml"), "--epochs", "1",
+        "--env-config", str(tbd_env), "--epochs", "1",
     ]
     with pytest.raises(SystemExit, match="TBD"):
         cli.main(args)

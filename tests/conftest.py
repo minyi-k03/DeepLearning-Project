@@ -152,3 +152,24 @@ def windows_file_locks(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(Path, "rename", rename)
     monkeypatch.setattr(shutil, "rmtree", rmtree)
     yield
+
+
+TRAINING_BUDGET_KEYS = (
+    "lr_candidates", "epochs", "early_stopping", "batch_size", "finetune_lr_candidates",
+)
+
+
+@pytest.fixture
+def tbd_env(tmp_path: Path) -> Path:
+    """A copy of configs/week1_env.yaml with the whole tuning budget back to TBD (null).
+
+    Tests that check "a TBD budget is refused" must not lean on the real file still being TBD:
+    once the team fills it, such a test stops being refused and starts a real training run.
+    """
+    import yaml
+
+    data = yaml.safe_load((ROOT / "configs" / "week1_env.yaml").read_text(encoding="utf-8"))
+    data["training_budget"].update({key: None for key in TRAINING_BUDGET_KEYS})
+    path = tmp_path / "tbd_env.yaml"
+    path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    return path

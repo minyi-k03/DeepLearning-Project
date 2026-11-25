@@ -206,9 +206,40 @@ def test_scheduler_warms_up_then_decays() -> None:
 # ---------------------------------------------------------------- config expansion
 
 
-def test_real_config_refuses_main_runs_while_unstated_values_are_tbd() -> None:
+def test_real_config_expands_main_runs_with_the_team_values() -> None:
+    """11/25 decision (agenda C): values the paper does not state, chosen by the team."""
+    import yaml
+
+    configs = expand_reproduction(MATRIX, ENV_PATH)
+    assert [(c.dataset, c.seed) for c in configs] == [
+        (DatasetName.MNLI, 0), (DatasetName.MNLI, 1), (DatasetName.MNLI, 2),
+        (DatasetName.SST2, 0), (DatasetName.SST2, 1), (DatasetName.SST2, 2),
+    ]
+    assert {(c.batch_size, c.reproduction.warmup_ratio, c.reproduction.lr_scheduler)
+            for c in configs} == {(32, 0.06, "linear")}
+    assert all(c.run_kind is RunKind.MAIN and c.track is TrackKind.REPRODUCTION for c in configs)
+    mnli, sst2 = configs[0], configs[3]  # Table 6 paper values are untouched
+    assert (mnli.lr_candidates, mnli.reproduction.weight_decay, mnli.epochs) == ((5e-5,), 5e-6, 1)
+    assert (sst2.lr_candidates, sst2.reproduction.weight_decay, sst2.epochs) == ((8e-5,), 1e-5, 2)
+    entries = yaml.safe_load(MATRIX.read_text(encoding="utf-8"))["reproduction_track"]
+    assert all(len(e["seeds"]) == e["num_runs"] == 3 for e in entries)
+
+
+def _tbd_matrix(tmp_path: Path) -> Path:
+    """The real matrix with the team-chosen values put back to TBD (null)."""
+    import yaml
+
+    matrix = yaml.safe_load(MATRIX.read_text(encoding="utf-8"))
+    for entry in matrix["reproduction_track"]:
+        entry.update(batch_size=None, warmup_ratio=None, lr_scheduler=None, seeds=None)
+    path = tmp_path / "tbd_matrix.yaml"
+    path.write_text(yaml.safe_dump(matrix), encoding="utf-8")
+    return path
+
+
+def test_tbd_values_refuse_main_runs(tmp_path: Path) -> None:
     with pytest.raises(ValueError) as info:
-        expand_reproduction(MATRIX, ENV_PATH)
+        expand_reproduction(_tbd_matrix(tmp_path), ENV_PATH)
     message = str(info.value)
     for missing in ("repro_mnli: batch_size is TBD", "repro_sst2: warmup_ratio is TBD",
                     "repro_mnli: lr_scheduler is TBD", "repro_sst2: seeds is TBD"):
@@ -389,8 +420,9 @@ def test_cli_debug_run_writes_a_record_without_the_lock(  # type: ignore[no-unty
     assert cli.main(args) == 0
     [path] = (out / "limit64").glob("*.json")  # a sample never shares a folder with others
     printed = capsys.readouterr().out
-    assert "(matched " in printed and "vs paper 0.1090" in printed  # US 45: next to 10.9%
     record = load_result_record(path)
+    assert f"matched {record.eval_error_rate_matched:.4f} vs paper 0.1090" in printed
+    assert f"mismatched {record.eval_error_rate_mismatched:.4f}" in printed
     assert record.config.track is TrackKind.REPRODUCTION
     assert record.config.run_kind is RunKind.DEBUG
     assert record.config.lr_candidates == (5e-5,)  # the paper value, not an override
@@ -403,7 +435,8 @@ def test_cli_debug_run_writes_a_record_without_the_lock(  # type: ignore[no-unty
 def test_cli_main_run_is_refused_while_values_are_tbd(tmp_path: Path) -> None:
     lock = tmp_path / "main_queue.lock"
     with pytest.raises(SystemExit, match="TBD"):
-        cli.main(["--output-dir", str(tmp_path / "repro"), "--lock-file", str(lock)])
+        cli.main(["--matrix", str(_tbd_matrix(tmp_path)), "--output-dir",
+                  str(tmp_path / "repro"), "--lock-file", str(lock)])
     assert not lock.exists()
     with pytest.raises(SystemExit, match="debug runs only"):
         cli.main(["--seeds", "0", "--output-dir", str(tmp_path / "repro")])

@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from contextlib import nullcontext
 from pathlib import Path
 
-from layer_fusion.contracts import DatasetName, RunConfig, RunKind
+from layer_fusion.contracts import DatasetName, ResultRecord, RunConfig, RunKind
 from layer_fusion.records import record_path, save_result_record
 from layer_fusion.reproduction import (
     REPRODUCTION_DATASETS,
@@ -85,12 +85,21 @@ def make_provider(dataset: DatasetName, args: argparse.Namespace):  # type: igno
     )
 
 
-def _versus_paper(record, paper: dict[DatasetName, float]) -> str:  # type: ignore[no-untyped-def]
-    """Our error rate(s) next to the published one (US 45). MNLI shows matched and the
-    combined matched+mismatched rate: which one the paper reports is not stated (TBD)."""
+def _versus_paper(record: ResultRecord, paper: dict[DatasetName, float]) -> str:
+    """Compare MNLI matched or SST-2 overall error with the published rate (US 45)."""
+    if record.config.dataset is DatasetName.MNLI:
+        matched = record.eval_error_rate_matched
+        mismatched = record.eval_error_rate_mismatched
+        comparison = f"matched {matched:.4f}" if matched is not None else "matched unavailable"
+        supplemental = (
+            f"mismatched {mismatched:.4f}" if mismatched is not None else "mismatched unavailable"
+        )
+        published = paper.get(DatasetName.MNLI)
+        if matched is not None and published is not None:
+            comparison += f" vs paper {published:.4f}"
+        return f"eval error {comparison} ({supplemental}, overall {record.eval_error_rate:.4f})"
+
     text = f"eval error {record.eval_error_rate:.4f}"
-    if record.eval_error_rate_matched is not None:
-        text += f" (matched {record.eval_error_rate_matched:.4f})"
     published = paper.get(record.config.dataset)
     return text if published is None else f"{text} vs paper {published:.4f}"
 
