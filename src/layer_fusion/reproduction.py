@@ -33,6 +33,7 @@ from layer_fusion.contracts import (
     DataAmount,
     DatasetName,
     FusionMethod,
+    LayerSubset,
     ReproductionSettings,
     ResultRecord,
     RunConfig,
@@ -138,10 +139,17 @@ def expand_reproduction(
         entry_seeds = seeds if seeds is not None else entry.get("seeds")
         if entry_seeds is None:
             problems.append(f"{entry['id']}: seeds is TBD")
+        elif run_kind is RunKind.MAIN and len(entry_seeds) != entry.get("num_runs"):
+            # ADR 0004 / US 45: a main result is the mean of num_runs runs; debug runs may
+            # take fewer seeds.
+            problems.append(
+                f"{entry['id']}: {len(entry_seeds)} seeds but num_runs is {entry.get('num_runs')}"
+            )
         resolved.append((entry, values, entry_seeds))
     if problems:
         raise ValueError(
-            "cannot expand the reproduction track (TBD values):\n- " + "\n- ".join(problems)
+            "cannot expand the reproduction track (TBD or invalid values):\n- "
+            + "\n- ".join(problems)
         )
 
     env = load_env_config(env_path)
@@ -203,6 +211,21 @@ def check_reproduction_config(config: RunConfig) -> None:
     _check_scheduler(settings.lr_scheduler)
     if config.input_setting is not None:
         raise ValueError("reproduction runs use the untruncated MNLI / SST-2 input")
+    # Main-track knobs the reproduction run never uses: refuse them so a record cannot say
+    # it used a layer subset, early stopping or a learning-rate search that never happened.
+    if config.layer_subset is not LayerSubset.ALL:
+        raise ValueError(
+            f"reproduction runs use the paper head on all layers, got layer_subset="
+            f"{config.layer_subset.value}"
+        )
+    if config.early_stopping_patience is not None:
+        raise ValueError(
+            "reproduction runs train fixed epochs; early_stopping_patience must be None"
+        )
+    if config.lr_selection_seed is not None:
+        raise ValueError(
+            "reproduction runs do no learning-rate search; lr_selection_seed must be None"
+        )
 
 
 # ---------------------------------------------------------------- model and optimizer

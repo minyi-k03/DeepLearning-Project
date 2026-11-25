@@ -27,6 +27,7 @@ from layer_fusion.contracts import (  # noqa: E402
     DatasetName,
     DocumentRecord,
     FusionMethod,
+    LayerSubset,
     ReproductionSettings,
     RunConfig,
     RunKind,
@@ -230,6 +231,35 @@ def test_debug_expansion_takes_the_paper_values() -> None:
                for c in configs)
 
 
+def _filled_matrix(tmp_path: Path, seeds: list[int]) -> Path:
+    """The real matrix with every TBD filled in, so a main expansion can get past them."""
+    import yaml
+
+    matrix = yaml.safe_load(MATRIX.read_text(encoding="utf-8"))
+    for entry in matrix["reproduction_track"]:
+        entry.update(batch_size=32, warmup_ratio=0.06, lr_scheduler="linear", seeds=seeds)
+    path = tmp_path / "matrix.yaml"
+    path.write_text(yaml.safe_dump(matrix), encoding="utf-8")
+    return path
+
+
+def test_main_expansion_runs_num_runs_seeds(tmp_path: Path) -> None:
+    configs = expand_reproduction(_filled_matrix(tmp_path, [0, 1, 2]), ENV_PATH)
+    assert [c.seed for c in configs] == [0, 1, 2, 0, 1, 2]
+
+
+@pytest.mark.parametrize("seeds", [[0, 1], [0, 1, 2, 3]])
+def test_main_expansion_refuses_a_seed_count_other_than_num_runs(  # type: ignore[no-untyped-def]
+    tmp_path: Path, seeds
+) -> None:
+    # ADR 0004 / US 45: a main reproduction result is the mean of num_runs (3) runs.
+    with pytest.raises(ValueError) as info:
+        expand_reproduction(_filled_matrix(tmp_path, seeds), ENV_PATH)
+    message = str(info.value)
+    for entry_id in ("repro_mnli", "repro_sst2"):
+        assert f"{entry_id}: {len(seeds)} seeds but num_runs is 3" in message
+
+
 def test_main_expansion_refuses_overrides() -> None:
     with pytest.raises(ValueError, match="debug runs only"):
         expand_reproduction(MATRIX, ENV_PATH, seeds=[0])
@@ -250,6 +280,10 @@ def test_main_expansion_refuses_overrides() -> None:
         ({"lr_candidates": (1e-3, 2e-3)}, "exactly the paper"),
         ({"batch_size": None}, "batch_size"),
         ({"reproduction": replace(SETTINGS, warmup_ratio=1.0)}, "warmup_ratio"),
+        # main-track fields that mean nothing here would be written into the record as if used
+        ({"layer_subset": LayerSubset.GLOBAL_ONLY}, "layer_subset"),
+        ({"early_stopping_patience": 3}, "early_stopping_patience"),
+        ({"lr_selection_seed": 0}, "lr_selection_seed"),
     ],
 )
 def test_incomplete_or_foreign_configs_are_refused(change, match) -> None:  # type: ignore[no-untyped-def]

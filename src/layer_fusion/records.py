@@ -223,8 +223,10 @@ def save_result_record(
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text + "\n")
         # mkstemp creates the file 0600; give it the mode a plain open() would, so records
-        # written as root in the container stay readable from the host account.
-        os.chmod(tmp_name, 0o666 & ~_current_umask())
+        # written as root in the container stay readable from the host account. POSIX only:
+        # Windows has no umask, and reading it briefly changes process-wide state.
+        if os.name == "posix":
+            os.chmod(tmp_name, 0o666 & ~_current_umask())
         os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
