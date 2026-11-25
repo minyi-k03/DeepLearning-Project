@@ -247,7 +247,7 @@ def _run_all(
             run_id = run_id_of(config)
             path = record_path(output_dir, run_id)
             if path.exists():
-                existing = _matching_record(path, config)
+                existing = matching_record(path, config)
                 log(f"[queue {index}/{total}] skip {run_id} (record exists)")
                 result.skipped.append(run_id)
                 if config.seed == selection.seed:
@@ -272,7 +272,7 @@ def _run_all(
     return result
 
 
-def _matching_record(path: Path, config: RunConfig) -> ResultRecord:
+def matching_record(path: Path, config: RunConfig) -> ResultRecord:
     """The record at ``path``, which must have been made with exactly ``config``.
 
     The run id leaves out the tuning budget and the expected cache metadata, so a record from
@@ -309,23 +309,35 @@ def _selection_record(
             f"selection-run record {path} is missing: seed {selection.seed} of this setting "
             "must run before the seeds that reuse its LR"
         )
-    record = _matching_record(path, selection)
+    record = matching_record(path, selection)
     selection_records.append(record)
     return record
 
 
-def cache_provider_factory(cache_root: str | Path) -> ProviderFactory:
-    """Config -> ``CacheProvider`` at ``<cache_root>/<dataset>[_<input setting>]``; each
-    cache folder is opened once and shared by the runs that read it."""
-    from layer_fusion.cache_build import cache_name
-    from layer_fusion.providers import CacheProvider
+def cache_provider_factory(
+    cache_root: str | Path, env_config: str | Path | None = None
+) -> ProviderFactory:
+    """Config -> its provider; each one is built once and shared by the runs that read it.
 
-    opened: dict[Path, CacheProvider] = {}
+    Frozen runs read ``CacheProvider(<cache_root>/<dataset>[_<input setting>])``. Finetune runs
+    (T-06d) get ``BackboneProvider.from_env`` under the locked setting of ``env_config``.
+    """
+    from layer_fusion.cache_build import cache_name, load_env_config
+    from layer_fusion.contracts import BackboneCondition
+    from layer_fusion.providers import BackboneProvider, CacheProvider
 
-    def factory(config: RunConfig) -> CacheProvider:
-        folder = Path(cache_root) / cache_name(config.dataset, config.input_setting)
-        if folder not in opened:
-            opened[folder] = CacheProvider(str(folder))
-        return opened[folder]
+    opened: dict[tuple[str, str], Any] = {}
+
+    def factory(config: RunConfig) -> Any:
+        name = cache_name(config.dataset, config.input_setting)
+        key = (config.backbone_condition.value, name)
+        if key not in opened:
+            if config.backbone_condition is BackboneCondition.FINETUNE:
+                if env_config is None:
+                    raise ValueError("finetune runs need env_config (configs/week1_env.yaml)")
+                opened[key] = BackboneProvider.from_env(config.dataset, load_env_config(env_config))
+            else:
+                opened[key] = CacheProvider(str(Path(cache_root) / name))
+        return opened[key]
 
     return factory

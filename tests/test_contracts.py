@@ -43,6 +43,7 @@ SPEC_FIELDS: dict[str, tuple[type, set[str]]] = {
             "track",
             "fixed_lr",  # 고정 학습률과 그 학습률을 고른 시드 (T-06a)
             "lr_selection_seed",
+            "reproduction",  # 재현 설정 (재현 트랙만, T-06e)
         },
     ),
     # 결과 레코드 (실행 설정은 `config`로 포함)

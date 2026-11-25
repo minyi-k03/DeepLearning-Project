@@ -193,3 +193,33 @@ def test_budget_helpers_shared_by_cli_and_expansion(tmp_path: Path) -> None:
         resolve_budget(env, RunKind.MAIN, TrainingBudget(epochs=1))
     with pytest.raises(ValueError, match="TBD"):
         resolve_budget(REAL_ENV, RunKind.MAIN).run_config_fields()
+
+
+MNLI_FINETUNE = {
+    "id": "mnli_finetune_full", "dataset": "mnli", "backbone_condition": "finetune",
+    "data_amount": "full", "input_setting": None, "fusion_methods": ["B0", "F2"],
+    "layer_subset": "all", "seeds": [0],
+}
+
+
+def test_finetune_settings_take_the_finetune_lr_candidates_and_float32_meta(
+    tmp_path: Path,
+) -> None:
+    """T-06d: finetune LRs come from ``finetune_lr_candidates``; layer vectors are computed in
+    float32 live, so the expected metadata does not carry the float16 cache dtype."""
+    env = _env_file(tmp_path, **BUDGET, finetune_lr_candidates=[1e-5, 2e-5, 5e-5])
+    matrix = _matrix_file(tmp_path, [MNLI, MNLI_FINETUNE])
+    configs = expand_experiment_matrix(matrix, env)
+    frozen = [c for c in configs if c.backbone_condition.value == "frozen"]
+    finetune = [c for c in configs if c.backbone_condition.value == "finetune"]
+    assert {c.lr_candidates for c in frozen} == {(1e-4, 1e-3, 1e-2)}
+    assert {c.lr_candidates for c in finetune} == {(1e-5, 2e-5, 5e-5)}
+    assert {c.expected_cache_meta.dtype for c in finetune} == {"float32"}
+    assert {c.expected_cache_meta.dtype for c in frozen} == {"float16"}
+
+
+def test_finetune_lr_candidates_tbd_blocks_only_finetune_experiments(tmp_path: Path) -> None:
+    env = _env_file(tmp_path, **BUDGET)  # finetune_lr_candidates stays null in the real file
+    assert expand_experiment_matrix(_matrix_file(tmp_path, [MNLI]), env)
+    with pytest.raises(ValueError, match="training_budget.finetune_lr_candidates is TBD"):
+        expand_experiment_matrix(_matrix_file(tmp_path, [MNLI, MNLI_FINETUNE]), env)

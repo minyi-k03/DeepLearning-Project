@@ -4,7 +4,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from layer_fusion.contracts import FusionMethod, LayerSubset  # noqa: E402
+from layer_fusion.contracts import MAIN_FUSION_METHODS, FusionMethod, LayerSubset  # noqa: E402
 from layer_fusion.fusion import (  # noqa: E402
     PerLayerNorm,
     build_fusion_head,
@@ -18,7 +18,7 @@ from layer_fusion.layers import GLOBAL_LAYERS, LOCAL_LAYERS  # noqa: E402
 HIDDEN = 16  # small hidden size keeps tests fast; heads take it as an argument
 NUM_CLASSES = 3
 BATCH = 4
-TESTED_METHODS = list(FusionMethod)  # B0, F1, F2, F3, F4, B0+
+TESTED_METHODS = list(MAIN_FUSION_METHODS)  # B0, F1, F2, F3, F4, B0+
 # Slots each head reads; all other slots must not affect its output.
 USED_SLOTS = {
     FusionMethod.B0: (22,),

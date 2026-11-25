@@ -1,4 +1,4 @@
-"""Execution seam, sequential queue runner, and reproduction track runner.
+"""Execution seam (frozen backbone and finetune conditions).
 
 References: docs/SPEC.md, ADR 0004, ADR 0009.
 """
@@ -6,7 +6,6 @@ References: docs/SPEC.md, ADR 0004, ADR 0009.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,6 +16,7 @@ from layer_fusion.contracts import (
     DataAmount,
     DatasetName,
     DocumentRecord,
+    FusionMethod,
     PredictionRecord,
     ResultRecord,
     RunConfig,
@@ -30,7 +30,7 @@ from layer_fusion.data import (
     sample_small_dataset,
 )
 from layer_fusion.inputs import assign_length_bucket
-from layer_fusion.providers import LayerVectorBatch, LayerVectorProvider
+from layer_fusion.providers import LayerVectorBatch, LayerVectorProvider, TokenBatch
 
 # SPEC §결정 필요 사항 (T-06a): one tuning split for every seed, drawn with a constant seed.
 TUNING_SPLIT_SEED = 0
@@ -70,8 +70,6 @@ def check_training_budget(config: RunConfig) -> None:
 
     Values stay TBD in configs/week1_env.yaml; this only checks that a run states them.
     """
-    if config.backbone_condition == BackboneCondition.FINETUNE:
-        raise NotImplementedError("finetune condition is implemented in T-06d (BackboneProvider)")
     for name in ("epochs", "batch_size"):
         value = getattr(config, name)
         if value is None or value < 1:
@@ -105,7 +103,7 @@ def check_training_budget(config: RunConfig) -> None:
         raise ValueError("fixed_lr needs lr_selection_seed (the seed of the selection run)")
 
 
-def _check_labels(batch: LayerVectorBatch, num_classes: int, split: str) -> None:
+def _check_labels(batch: LayerVectorBatch | TokenBatch, num_classes: int, split: str) -> None:
     labels = np.asarray(batch.labels)
     if labels.size and (labels.min() < 0 or labels.max() >= num_classes):
         raise ValueError(
@@ -114,12 +112,17 @@ def _check_labels(batch: LayerVectorBatch, num_classes: int, split: str) -> None
         )
 
 
-def _check_run_inputs(config: RunConfig, eval_batch: LayerVectorBatch) -> None:
+def _check_run_inputs(config: RunConfig, eval_batch: LayerVectorBatch | TokenBatch) -> None:
     """Reject settings and eval splits that would silently drop report fields (PR #15 review)."""
     if config.track == TrackKind.REPRODUCTION:
         raise ValueError(
-            "run_experiment is the main-track frozen seam; the reproduction track runs through "
-            "run_reproduction_track (ADR 0004)"
+            "run_experiment is the main-track seam; the reproduction track runs through "
+            "reproduction.run_reproduction (ADR 0004, T-06e)"
+        )
+    if config.fusion_method == FusionMethod.PAPER_HEAD:
+        raise ValueError(
+            "paper_head is the reproduction track's classification head (ADR 0004); main runs "
+            "use a fusion method B0/F1/F2/F3/F4/B0+"
         )
     if config.dataset == DatasetName.IMDB:
         if config.input_setting is None:
@@ -138,6 +141,20 @@ def _check_run_inputs(config: RunConfig, eval_batch: LayerVectorBatch) -> None:
             raise ValueError(
                 f"MNLI genre_splits must be in {sorted(MNLI_GENRES)}, got {sorted(unknown)}"
             )
+
+
+def _check_finetune(config: RunConfig, provider: Any) -> None:
+    """The finetune condition is for the MNLI core comparison only (SPEC, ADR 0004)."""
+    if not hasattr(provider, "fresh_model"):
+        raise ValueError(
+            "finetune runs need a BackboneProvider (a cache has no trainable backbone)"
+        )
+    if config.dataset != DatasetName.MNLI:
+        raise ValueError(
+            f"the finetune condition is for MNLI only (ADR 0004), got {config.dataset.value}"
+        )
+    if config.data_amount != DataAmount.FULL:
+        raise ValueError("the finetune condition runs on the full MNLI data only (SPEC 실험 행렬)")
 
 
 @dataclass
@@ -169,7 +186,7 @@ def _select_candidate(candidates: list[_Candidate]) -> _Candidate:
 
 
 def _training_rows(
-    train: LayerVectorBatch, config: RunConfig, num_classes: int
+    train: LayerVectorBatch | TokenBatch, config: RunConfig, num_classes: int
 ) -> tuple[np.ndarray, np.ndarray, list[str] | None]:
     """Row indices of (training rows, tuning rows) and the small-sample doc_ids, if any.
 
@@ -191,6 +208,39 @@ def _training_rows(
     train_rows = np.sort(np.fromiter((row_of[r.doc_id] for r in train_part), dtype=np.int64))
     tuning_rows = np.sort(np.fromiter((row_of[r.doc_id] for r in tuning), dtype=np.int64))
     return train_rows, tuning_rows, small_ids
+
+
+def prediction_records(
+    eval_batch: LayerVectorBatch | TokenBatch, predicted: np.ndarray, config: RunConfig
+) -> list[PredictionRecord]:
+    """One PredictionRecord per eval document, in eval order (shared with T-06e)."""
+    token_lengths = eval_batch.token_lengths
+    genres = eval_batch.genre_splits
+    labels = np.asarray(eval_batch.labels)
+    return [
+        PredictionRecord(
+            doc_id=doc_id,
+            label=int(labels[i]),
+            prediction=int(predicted[i]),
+            token_length=None if token_lengths is None else int(token_lengths[i]),
+            length_bucket=(
+                assign_length_bucket(int(token_lengths[i]))
+                if token_lengths is not None and config.input_setting is not None
+                else None
+            ),
+            genre_split=None if genres is None else genres[i],
+        )
+        for i, doc_id in enumerate(eval_batch.doc_ids)
+    ]
+
+
+def genre_error_rates(
+    predictions: list[PredictionRecord], config: RunConfig
+) -> tuple[float | None, float | None]:
+    """(matched, mismatched) error rates for MNLI, ``(None, None)`` otherwise."""
+    if config.dataset != DatasetName.MNLI:
+        return None, None
+    return _mnli_genre_error_rates(predictions)
 
 
 def _mnli_genre_error_rates(
@@ -220,7 +270,12 @@ def run_experiment(
     *,
     device: str | None = None,
 ) -> ResultRecord:
-    """Execution seam: (RunConfig, LayerVectorProvider) -> ResultRecord (frozen backbone).
+    """Execution seam: (RunConfig, LayerVectorProvider) -> ResultRecord.
+
+    Frozen backbone: the provider hands out cached layer vectors and only the head trains.
+    Finetune (T-06d): a ``BackboneProvider`` hands out token ids and ModernBERT + head train
+    together (``finetune.FinetuneModel``); everything below is shared, so both conditions
+    produce the same record format. ``trainable_params`` then counts the backbone too.
 
     Contract (SPEC §결정 필요 사항, T-06a):
     - Validates provider metadata against the RunConfig before any training (US 26).
@@ -247,6 +302,9 @@ def run_experiment(
     )
     from layer_fusion.training import RowView, TrainingDivergedError, evaluate, train_head
 
+    finetune = config.backbone_condition == BackboneCondition.FINETUNE
+    if finetune:
+        _check_finetune(config, provider)
     torch_device = _resolve_device(device)
     num_classes = DATASET_SPECS[config.dataset].num_classes
     train = provider.get_split("train")
@@ -256,15 +314,35 @@ def run_experiment(
     _check_run_inputs(config, eval_batch)
 
     train_rows, tuning_rows, small_ids = _training_rows(train, config, num_classes)
-    train_view = RowView(train.vectors, train.labels, train_rows)
-    tuning_view = RowView(train.vectors, train.labels, tuning_rows)
-
     def make_head() -> Any:
         return build_fusion_head(config.fusion_method, num_classes, config.layer_subset)
 
+    if finetune:
+        from layer_fusion.finetune import FinetuneModel, TokenRowView
+
+        pool_special = provider.metadata.include_special_tokens_in_pool
+
+        def view(batch: Any, rows: np.ndarray) -> Any:
+            return TokenRowView(
+                batch.input_ids, batch.labels, rows,
+                provider.pad_id, provider.special_ids, pool_special,
+            )
+
+        def make_model() -> Any:
+            return FinetuneModel(provider.fresh_model(), make_head())
+    else:
+
+        def view(batch: Any, rows: np.ndarray) -> Any:
+            return RowView(batch.vectors, batch.labels, rows)
+
+        make_model = make_head
+
+    train_view = view(train, train_rows)
+    tuning_view = view(train, tuning_rows)
+
     def fit(lr: float) -> _Candidate:
         head, outcome = train_head(
-            make_head,
+            make_model,
             train_view,
             tuning_view,
             lr=lr,
@@ -274,7 +352,9 @@ def run_experiment(
             seed=config.seed,
             device=torch_device,
         )
-        return _Candidate(lr, head, outcome)
+        # Park the trained model on the CPU: with the finetune condition each candidate is a
+        # whole ModernBERT, and keeping all of them on the GPU would multiply its memory use.
+        return _Candidate(lr, head.to("cpu"), outcome)
 
     lr_tuning_scores: dict[float, float] = {}
     lr_search_seconds: float | None = None
@@ -292,37 +372,20 @@ def run_experiment(
         if chosen.outcome.diverged:
             raise TrainingDivergedError(f"training at fixed_lr={config.fixed_lr} diverged")
         lr_selection_seed = config.lr_selection_seed
-    selected_lr, head, outcome = chosen.lr, chosen.head, chosen.outcome
+    selected_lr, outcome = chosen.lr, chosen.outcome
+    head = chosen.head.to(torch_device)  # only the reported model goes back to the device
+    if config.fixed_lr is None:
+        for candidate in candidates:
+            candidate.head = None  # drop the other candidates' models
 
-    eval_view = RowView(
-        eval_batch.vectors, eval_batch.labels, np.arange(len(eval_batch.doc_ids), dtype=np.int64)
-    )
+    eval_view = view(eval_batch, np.arange(len(eval_batch.doc_ids), dtype=np.int64))
     eval_loss, eval_error, predicted = evaluate(head, eval_view, config.batch_size, torch_device)
     if not math.isfinite(eval_loss):
         raise ValueError("eval loss is not finite (non-finite eval vectors?)")
 
     token_lengths = eval_batch.token_lengths
-    genres = eval_batch.genre_splits
-    labels = np.asarray(eval_batch.labels)
-    predictions = [
-        PredictionRecord(
-            doc_id=doc_id,
-            label=int(labels[i]),
-            prediction=int(predicted[i]),
-            token_length=None if token_lengths is None else int(token_lengths[i]),
-            length_bucket=(
-                assign_length_bucket(int(token_lengths[i]))
-                if token_lengths is not None and config.input_setting is not None
-                else None
-            ),
-            genre_split=None if genres is None else genres[i],
-        )
-        for i, doc_id in enumerate(eval_batch.doc_ids)
-    ]
-
-    matched = mismatched = None
-    if config.dataset == DatasetName.MNLI:
-        matched, mismatched = _mnli_genre_error_rates(predictions)
+    predictions = prediction_records(eval_batch, predicted, config)
+    matched, mismatched = genre_error_rates(predictions, config)
 
     metadata = provider.metadata
     truncated_doc_ratio = None
@@ -345,7 +408,7 @@ def run_experiment(
         learning_curve=outcome.learning_curve,
         eval_error_rate_matched=matched,
         eval_error_rate_mismatched=mismatched,
-        layer_weights=extract_layer_weights(head),
+        layer_weights=extract_layer_weights(head.head if finetune else head),
         small_sample_doc_ids=small_ids,
         transformers_version=metadata.transformers_version,
         attn_implementation=metadata.attn_implementation,
@@ -355,12 +418,3 @@ def run_experiment(
         lr_search_seconds=lr_search_seconds,
         tuning_eval_seconds=outcome.tuning_eval_seconds,
     )
-
-
-def run_reproduction_track(
-    dataset: str,
-    seeds: Sequence[int],
-    output_dir: str,
-) -> list[ResultRecord]:
-    """Run paper fine-tuning reproduction track (MNLI 89.1 / SST-2 96.0, x3 runs, ADR 0004)."""
-    raise NotImplementedError("TODO: Implement reproduction track runner (T-06/T-08)")

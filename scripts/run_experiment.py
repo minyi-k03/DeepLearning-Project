@@ -12,6 +12,13 @@ T-06c), which holds the GPU lock (ADR 0009), so ``--run-kind main`` is refused h
 tuning budget comes from ``configs/week1_env.yaml``; TBD values are passed on the command
 line. A reuse run (``--fixed-lr`` + ``--lr-selection-seed``) is checked against its
 selection-run record in ``--output-dir`` before training.
+
+Finetune condition (T-06d): ``--backbone finetune`` loads MNLI and ModernBERT instead of a
+cache and trains both; ``--limit N`` keeps N random documents per split, e.g.
+
+    python scripts/run_experiment.py --dataset mnli --backbone finetune --fusion B0 --seed 0 \
+        --limit 2000 --finetune-lr-candidates 2e-5 --epochs 1 --early-stopping-patience 1 \
+        --batch-size 32
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ from pathlib import Path
 
 from layer_fusion.cache_build import cache_name
 from layer_fusion.contracts import (
+    MAIN_FUSION_METHODS,
     BackboneCondition,
     DataAmount,
     DatasetName,
@@ -46,7 +54,9 @@ DEFAULT_CACHE_ROOT = Path("data/cache")
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a single layer-fusion experiment.")
     parser.add_argument("--dataset", required=True, choices=[d.value for d in DatasetName])
-    parser.add_argument("--fusion", required=True, choices=[m.value for m in FusionMethod])
+    parser.add_argument(
+        "--fusion", required=True, choices=[m.value for m in MAIN_FUSION_METHODS]
+    )
     parser.add_argument(
         "--backbone", default="frozen", choices=[b.value for b in BackboneCondition]
     )
@@ -67,6 +77,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     budget.add_argument("--epochs", type=int, default=None)
     budget.add_argument("--early-stopping-patience", type=int, default=None)
     budget.add_argument("--batch-size", type=int, default=None)
+    budget.add_argument("--finetune-lr-candidates", type=float, nargs="+", default=None)
+    parser.add_argument(
+        "--limit", type=int, default=None,
+        help="finetune only: N random documents per split (debug sample)",
+    )
     reuse = parser.add_argument_group("LR reuse (the other seeds of a setting)")
     reuse.add_argument("--fixed-lr", type=float, default=None)
     reuse.add_argument("--lr-selection-seed", type=int, default=None)
@@ -90,22 +105,28 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         epochs=args.epochs,
         early_stopping_patience=args.early_stopping_patience,
         batch_size=args.batch_size,
+        finetune_lr_candidates=(
+            None if args.finetune_lr_candidates is None else tuple(args.finetune_lr_candidates)
+        ),
     )
+    backbone = BackboneCondition(args.backbone)
+    if args.limit is not None and backbone is not BackboneCondition.FINETUNE:
+        raise ValueError("--limit samples the finetune data; frozen runs use a cache folder")
     budget = resolve_budget(args.env_config, run_kind, overrides)
-    if budget.missing():
+    if budget.missing(backbone):
         raise ValueError(
-            f"tuning budget is TBD in {args.env_config}: {budget.missing()} "
+            f"tuning budget is TBD in {args.env_config}: {budget.missing(backbone)} "
             "(pass them on the command line)"
         )
     return RunConfig(
         dataset=DatasetName(args.dataset),
         data_amount=DataAmount(args.data_amount),
         fusion_method=FusionMethod(args.fusion),
-        backbone_condition=BackboneCondition(args.backbone),
+        backbone_condition=backbone,
         seed=args.seed,
         layer_subset=LayerSubset(args.layer_subset),
         input_setting=None if args.input_setting is None else InputSetting(args.input_setting),
-        **budget.run_config_fields(),
+        **budget.run_config_fields(backbone),
         run_kind=run_kind,
         fixed_lr=args.fixed_lr,
         lr_selection_seed=args.lr_selection_seed,
@@ -120,6 +141,16 @@ def check_lr_reuse(config: RunConfig, output_dir: str | Path) -> None:
     runs_dir = Path(output_dir)
     records = load_result_records(runs_dir) if runs_dir.is_dir() else []
     find_selection_record_for(config, records, label="--fixed-lr")
+
+
+def make_backbone_provider(config: RunConfig, args: argparse.Namespace):  # type: ignore[no-untyped-def]
+    """ModernBERT + the dataset, under the locked setting of ``--env-config`` (T-06d)."""
+    from layer_fusion.cache_build import load_env_config
+    from layer_fusion.providers import BackboneProvider
+
+    return BackboneProvider.from_env(
+        config.dataset, load_env_config(args.env_config), limit=args.limit
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> Path:
@@ -139,13 +170,16 @@ def main(argv: Sequence[str] | None = None) -> Path:
     out_path = record_path(args.output_dir, make_run_id(config))
     if out_path.exists() and not args.overwrite:
         raise SystemExit(f"error: {out_path} already exists; result records are never overwritten")
-    cache_dir = args.cache_dir or DEFAULT_CACHE_ROOT / cache_name(
-        config.dataset, config.input_setting
-    )
-    try:
-        provider = CacheProvider(str(cache_dir))
-    except FileNotFoundError as exc:
-        raise SystemExit(f"error: {exc}") from exc
+    if config.backbone_condition is BackboneCondition.FINETUNE:
+        provider = make_backbone_provider(config, args)
+    else:
+        cache_dir = args.cache_dir or DEFAULT_CACHE_ROOT / cache_name(
+            config.dataset, config.input_setting
+        )
+        try:
+            provider = CacheProvider(str(cache_dir))
+        except FileNotFoundError as exc:
+            raise SystemExit(f"error: {exc}") from exc
 
     record = run_experiment(config, provider, device=args.device)
     path = save_result_record(record, args.output_dir, overwrite=args.overwrite)

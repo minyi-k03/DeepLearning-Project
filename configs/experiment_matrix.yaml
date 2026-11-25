@@ -73,7 +73,9 @@ experiments:
     seeds: null
 
 reproduction_track:
-  # 본 실험 결과표와 분리됨 (ADR 0004)
+  # 본 실험 결과표와 분리됨 (ADR 0004). 학습률·가중치 감쇠·에폭은 논문 값
+  # (arXiv 2412.13663v2 부록 E.1 Table 6, ModernBERT-base, PDF 원문 확인, T-06e).
+  # batch_size·warmup_ratio·lr_scheduler·seeds는 논문에 없어 미정(null) — 11/30 전 팀 결정.
   - id: repro_mnli
     dataset: mnli
     track: reproduction
@@ -82,6 +84,13 @@ reproduction_track:
     num_runs: 3
     paper_reported_accuracy: 89.1
     paper_reported_error_rate: 10.9
+    lr: 5.0e-5
+    weight_decay: 5.0e-6
+    epochs: 1
+    batch_size: null
+    warmup_ratio: null
+    lr_scheduler: null
+    seeds: null
 
   - id: repro_sst2
     dataset: sst2
@@ -91,3 +100,10 @@ reproduction_track:
     num_runs: 3
     paper_reported_accuracy: 96.0
     paper_reported_error_rate: 4.0
+    lr: 8.0e-5
+    weight_decay: 1.0e-5
+    epochs: 2
+    batch_size: null
+    warmup_ratio: null
+    lr_scheduler: null
+    seeds: null

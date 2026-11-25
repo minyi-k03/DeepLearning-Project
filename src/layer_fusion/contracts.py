@@ -32,6 +32,15 @@ class FusionMethod(str, Enum):
     F3 = "F3"
     F4 = "F4"
     B0_PLUS = "B0+"
+    # Reproduction track only: the paper's classification head (ADR 0004, T-06e), kept
+    # distinct from B0 so a reproduction record is never read as a B0 result.
+    PAPER_HEAD = "paper_head"
+
+
+# The fusion methods compared in main-track runs (every member except PAPER_HEAD).
+MAIN_FUSION_METHODS: tuple[FusionMethod, ...] = tuple(
+    m for m in FusionMethod if m is not FusionMethod.PAPER_HEAD
+)
 
 
 class LayerSubset(str, Enum):
@@ -116,6 +125,15 @@ class CacheMetadata:
 
 
 @dataclass(frozen=True)
+class ReproductionSettings:
+    """Paper fine-tuning settings of a reproduction-track run (ADR 0004, T-06e)."""
+
+    weight_decay: float
+    warmup_ratio: float  # fraction of all optimizer steps spent warming up
+    lr_scheduler: str  # transformers.get_scheduler name, e.g. "linear"
+
+
+@dataclass(frozen=True)
 class RunConfig:
     """Execution configuration passed into the Execution seam (SPEC.md §데이터 형태)."""
 
@@ -137,6 +155,7 @@ class RunConfig:
     # one selection per setting, other seeds reuse it). None -> this run searches lr_candidates.
     fixed_lr: float | None = None
     lr_selection_seed: int | None = None  # seed of the run that chose fixed_lr
+    reproduction: ReproductionSettings | None = None  # reproduction track only (T-06e)
 
 
 @dataclass(frozen=True)

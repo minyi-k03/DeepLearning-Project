@@ -209,12 +209,162 @@ class CacheProvider:
         )
 
 
-class BackboneProvider:
-    """Computes layer vectors live through ModernBERT-base (finetune mode)."""
+@dataclass
+class TokenBatch:
+    """A tokenized split for the finetune condition: token ids instead of layer vectors."""
 
-    def __init__(self, model_name: str) -> None:
-        self.model_name = model_name
-        raise NotImplementedError("TODO: Implement BackboneProvider (T-04/T-06)")
+    doc_ids: list[str]
+    labels: np.ndarray            # shape [N]
+    input_ids: list[list[int]]    # unpadded model inputs (padding happens per batch)
+    metadata: CacheMetadata
+    genre_splits: list[str | None] | None = None
+    token_lengths: list[int] | None = None
+    view_ratios: list[float] | None = None
+
+
+class BackboneProvider:
+    """Layer vectors computed live by a trainable ModernBERT (finetune condition, T-06d).
+
+    Holds the tokenized splits and a pristine copy of the pretrained model; every training run
+    starts from :meth:`fresh_model`, so LR candidates and seeds never share trained weights.
+    ``metadata`` describes the extraction setting exactly like a cache's (``dtype`` is
+    ``float32``: vectors are computed, not stored), so ``expected_cache_meta`` checks apply
+    unchanged. A ``limited`` provider (debug ``--limit`` sample) refuses main runs, because
+    unlike a cache folder nothing in its metadata marks it as a sample.
+    """
+
+    def __init__(
+        self,
+        splits: dict[str, Sequence[DocumentRecord]],
+        metadata: CacheMetadata,
+        model: Any | None,
+        tokenizer: Any,
+        *,
+        limited: bool = False,
+    ) -> None:
+        """``model=None`` keeps only the tokenized splits: the reproduction track (T-06e)
+        builds its own paper classification model and never asks for a backbone."""
+        from layer_fusion.inputs import build_tokenized_inputs
+
+        if metadata.dtype != "float32":
+            raise ValueError(f"finetune layer vectors are float32, metadata says {metadata.dtype}")
+        model_attn = getattr(getattr(model, "config", None), "_attn_implementation", None)
+        if model_attn is not None and model_attn != metadata.attn_implementation:
+            raise ValueError(
+                f"model uses attn_implementation={model_attn!r}, metadata records "
+                f"{metadata.attn_implementation!r} (ADR 0005)"
+            )
+        self._metadata = metadata
+        self._model = None if model is None else model.cpu()
+        self.limited = limited
+        self.pad_id = int(tokenizer.pad_token_id)
+        self.special_ids = (int(tokenizer.cls_token_id), int(tokenizer.sep_token_id))
+        input_setting = metadata.input_setting
+        lfull_cap = metadata.max_length_cap if input_setting is InputSetting.LFULL else None
+        self._batches: dict[str, TokenBatch] = {}
+        for name, records in splits.items():
+            records = list(records)
+            tokenized = build_tokenized_inputs(records, tokenizer, input_setting, lfull_cap)
+            labels = np.asarray([r.label for r in records], dtype=np.int64)
+            genres = [r.genre_split for r in records]
+            genre_splits = genres if any(g is not None for g in genres) else None
+            check_split_lengths(
+                len(records),
+                tokenized.doc_ids,
+                labels,
+                where=f"backbone split {name!r}",
+                token_lengths=tokenized.token_lengths,
+                genre_splits=genre_splits,
+                view_ratios=tokenized.view_ratios,
+            )
+            self._batches[name] = TokenBatch(
+                doc_ids=tokenized.doc_ids,
+                labels=labels,
+                input_ids=tokenized.input_ids,
+                metadata=metadata,
+                genre_splits=genre_splits,
+                token_lengths=tokenized.token_lengths,
+                view_ratios=tokenized.view_ratios,
+            )
+
+    @classmethod
+    def from_env(
+        cls,
+        dataset: Any,
+        env: Any,
+        *,
+        limit: int | None = None,
+        data_dir: str | None = None,
+        load_backbone: bool = True,
+    ) -> BackboneProvider:
+        """Load ``dataset`` and the locked ModernBERT setting of ``env`` (``ExtractionEnv``).
+
+        ``limit`` keeps a fixed random sample of that many documents per split (debug only).
+        """
+        import transformers
+        from transformers import AutoModel, AutoTokenizer
+
+        from layer_fusion.cache_build import sample_records
+        from layer_fusion.data import load_dataset_splits
+
+        if transformers.__version__ != env.transformers_version:
+            raise ValueError(
+                f"transformers {transformers.__version__} is installed, but runs must use the "
+                f"locked {env.transformers_version} (ADR 0005)"
+            )
+        if env.torch_compile:
+            raise ValueError("torch_compile=true is not supported by the finetune path yet")
+        splits = load_dataset_splits(dataset, data_dir)
+        if limit is not None:
+            splits = {name: sample_records(records, limit) for name, records in splits.items()}
+        tokenizer = AutoTokenizer.from_pretrained(env.model_name)
+        model = (
+            AutoModel.from_pretrained(env.model_name, attn_implementation=env.attn_implementation)
+            if load_backbone
+            else None
+        )
+        return cls(
+            splits,
+            env.cache_metadata(None, "float32"),
+            model,
+            tokenizer,
+            limited=limit is not None,
+        )
+
+    @property
+    def metadata(self) -> CacheMetadata:
+        return self._metadata
+
+    def validate_for_run(self, config: RunConfig) -> None:
+        from layer_fusion.contracts import BackboneCondition
+
+        if config.backbone_condition is not BackboneCondition.FINETUNE:
+            raise CacheConfigMismatchError(
+                "BackboneProvider is for the finetune condition; frozen runs read a cache"
+            )
+        if self.limited and config.run_kind is RunKind.MAIN:
+            raise CacheConfigMismatchError(
+                "a --limit sample provider is for debug runs only (AGENTS.md §4)"
+            )
+        check_provider_for_run(self._metadata, config)
+
+    def get_split(self, split_name: str) -> TokenBatch:
+        if split_name not in self._batches:
+            raise KeyError(f"Unknown split {split_name!r}")
+        return self._batches[split_name]
+
+    def fresh_model(self) -> Any:
+        """A trainable copy of the pretrained backbone (on CPU)."""
+        import copy
+
+        if self._model is None:
+            raise RuntimeError("this BackboneProvider was built without a backbone model")
+
+        model = copy.deepcopy(self._model)
+        model.train()
+        for parameter in model.parameters():
+            parameter.requires_grad_(True)
+        return model
 
 
 class FakeLayerVectorProvider:
