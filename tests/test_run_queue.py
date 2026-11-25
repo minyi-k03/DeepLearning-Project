@@ -460,3 +460,17 @@ def test_cli_without_best_fusion_from_still_refuses_the_placeholder(tmp_path: Pa
     ]
     with pytest.raises(SystemExit, match="BEST_FUSION"):
         cli.main(args)
+
+
+def test_cli_missing_rules_file_ends_with_a_clean_error(tmp_path: Path) -> None:
+    runs = tmp_path / "frozen"
+    _write_selection_records(runs, {"F1": .3, "F2": .2, "F3": .1, "F4": .4}, RunKind.DEBUG)
+    args = [
+        "--debug", "--experiments", "mnli_finetune_full", "--best-fusion-from", str(runs),
+        "--rules", str(tmp_path / "no_such_rules.yaml"), "--seeds", "0",
+        "--lr-candidates", "1e-3", "--finetune-lr-candidates", "2e-5", "--epochs", "1",
+        "--early-stopping-patience", "1", "--batch-size", "8",
+        "--output-dir", str(tmp_path / "out"), "--dry-run",
+    ]
+    with pytest.raises(SystemExit, match="error: .*no_such_rules.yaml"):
+        cli.main(args)

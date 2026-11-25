@@ -302,9 +302,11 @@ def select_best_fusion(
     """Apply ``best_fusion_selection_rule`` to the MNLI frozen-full results (T-08d -> T-08f).
 
     Reads only the LR-selection runs (``fixed_lr is None``) of F1-F4 on MNLI, frozen backbone,
-    full data, all layers, track main and the given ``run_kind`` (a main queue never reads
-    debug records). Each method needs exactly one such run. The score is the tuning-split
-    error rate at the selected LR (``lr_tuning_scores[selected_lr]``); the eval set is not used.
+    full data, no input setting, all layers, track main and the given ``run_kind`` (a main queue
+    never reads debug records). Each method needs exactly one such run, and for main runs it must
+    be seed 0 as the rule says. The score is the tuning-split error rate at the selected LR
+    (``lr_tuning_scores[selected_lr]``); the eval set is not used. ``+inf`` marks a diverged
+    candidate and is skipped; NaN or ``-inf`` is a corrupted record and is refused.
     """
     if rule is None:
         raise ValueError("best_fusion_selection_rule is TBD (fixed at the 11/30 lock, T-07a)")
@@ -322,6 +324,7 @@ def select_best_fusion(
             and config.dataset is DatasetName.MNLI
             and config.backbone_condition is BackboneCondition.FROZEN
             and config.data_amount is DataAmount.FULL
+            and config.input_setting is None
             and config.layer_subset is LayerSubset.ALL
             and config.fixed_lr is None
         ):
@@ -337,13 +340,23 @@ def select_best_fusion(
             "runs (is T-08d finished?):\n- " + "\n- ".join(problems)
         )
     chosen = {method: runs[0] for method, runs in found.items()}
+    if run_kind is RunKind.MAIN:
+        not_seed_0 = [r.run_id for r in chosen.values() if r.config.seed != 0]
+        if not_seed_0:
+            raise ValueError(
+                f"the rule reads the LR-selection run of seed 0; these main selection runs are "
+                f"on another seed: {not_seed_0}"
+            )
     missing = [r.run_id for r in chosen.values() if r.selected_lr not in r.lr_tuning_scores]
     if missing:
         raise ValueError(f"selection runs without a tuning score for their selected LR: {missing}")
     scores = {
         method: float(rec.lr_tuning_scores[rec.selected_lr]) for method, rec in chosen.items()
     }
-    usable = [m for m in BEST_FUSION_CANDIDATES if math.isfinite(scores[m])]
+    corrupted = [m.value for m, s in scores.items() if math.isnan(s) or s == -math.inf]
+    if corrupted:
+        raise ValueError(f"tuning scores are NaN or -inf (corrupted records) for {corrupted}")
+    usable = [m for m in BEST_FUSION_CANDIDATES if scores[m] != math.inf]
     if not usable:
         raise ValueError("cannot choose BEST_FUSION: every F1-F4 selection run diverged")
     best = min(usable, key=lambda m: (scores[m], BEST_FUSION_CANDIDATES.index(m)))

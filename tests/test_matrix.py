@@ -366,3 +366,37 @@ def test_best_fusion_fills_the_placeholder_only_with_a_fusion_method(tmp_path: P
     for wrong in (FusionMethod.B0, FusionMethod.B0_PLUS):
         with pytest.raises(ValueError, match="F1 to F4"):
             expand_experiment_matrix(matrix, env, best_fusion=wrong)
+
+
+def test_main_selection_runs_must_be_seed_0_as_the_rule_says(tmp_path: Path) -> None:
+    """Rule text: 'the LR-selection run (seed 0)'. A main selection run on another seed is refused;
+    debug queues stay flexible."""
+    main = _frozen_records(tmp_path, {"F1": 0.3, "F2": 0.2, "F3": 0.25, "F4": 0.4})
+    shifted = [
+        replace(r, config=replace(r.config, seed=7)) if r.run_id == "F2-s0" else r for r in main
+    ]
+    with pytest.raises(ValueError, match="seed 0"):
+        select_best_fusion(shifted, BEST_FUSION_RULE)
+    debug = _frozen_records(tmp_path, {"F1": 0.3, "F2": 0.2, "F3": 0.25, "F4": 0.4}, RunKind.DEBUG)
+    debug = [
+        replace(r, config=replace(r.config, seed=7)) if r.run_id == "F2-s0" else r for r in debug
+    ]
+    assert select_best_fusion(debug, BEST_FUSION_RULE, run_kind=RunKind.DEBUG).method is (
+        FusionMethod.F2
+    )
+
+
+def test_best_fusion_ignores_runs_with_an_input_setting(tmp_path: Path) -> None:
+    records = _frozen_records(tmp_path, {"F1": 0.3, "F2": 0.2, "F3": 0.25, "F4": 0.4})
+    f1 = next(r for r in records if r.run_id == "F1-s0")
+    odd = replace(f1, run_id="odd", config=replace(f1.config, input_setting=InputSetting.L512),
+                  lr_tuning_scores={1e-3: 0.0})
+    assert select_best_fusion(records + [odd], BEST_FUSION_RULE).method is FusionMethod.F2
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("-inf")])
+def test_nan_or_negative_infinite_scores_are_refused_not_skipped(tmp_path: Path, bad) -> None:  # type: ignore[no-untyped-def]
+    """Only +inf means 'diverged'; NaN / -inf is a corrupted record and must not be dropped."""
+    records = _frozen_records(tmp_path, {"F1": bad, "F2": 0.2, "F3": 0.25, "F4": 0.4})
+    with pytest.raises(ValueError, match="F1"):
+        select_best_fusion(records, BEST_FUSION_RULE)
