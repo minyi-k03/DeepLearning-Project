@@ -402,3 +402,75 @@ def test_cli_debug_queue_writes_records_that_load_back(cache_root: Path, tmp_pat
     # Rerunning resumes: everything is skipped, nothing is rewritten.
     assert cli.main(_debug_args(cache_root, out)) == 0
     assert sorted(r.run_id for r in load_result_records(out)) == sorted(records)
+
+
+# --- --best-fusion-from: the fine-tune queue takes the method chosen by the T-07a rule -------
+
+
+def _write_selection_records(out: Path, scores: dict[str, float], kind: RunKind) -> None:
+    """F1-F4 MNLI frozen-full LR-selection records (seed 0) with the given tuning scores."""
+    from dataclasses import replace
+
+    from layer_fusion.contracts import FusionMethod, ResultRecord
+    from layer_fusion.records import save_result_record
+
+    for method, score in scores.items():
+        config = replace(_config(seed=0, fusion_method=FusionMethod(method)), run_kind=kind)
+        save_result_record(ResultRecord(
+            run_id=_run_id(config), config=config, selected_lr=1e-3,
+            lr_tuning_scores={1e-3: score}, eval_error_rate=0.3, predictions=[],
+            trainable_params=1, train_seconds=1.0, lr_selection_seed=0,
+        ), out)
+
+
+def test_cli_main_finetune_queue_needs_locked_rules_before_the_lock(tmp_path: Path) -> None:
+    runs = tmp_path / "frozen"
+    _write_selection_records(runs, {"F1": .3, "F2": .2, "F3": .1, "F4": .4}, RunKind.MAIN)
+    lock = tmp_path / "main_queue.lock"
+    with pytest.raises(SystemExit, match="needs 'locked'"):
+        cli.main(["--experiments", "mnli_finetune_full", "--best-fusion-from", str(runs),
+                  "--output-dir", str(tmp_path / "out"), "--lock-file", str(lock)])
+    assert not lock.exists()
+
+
+def test_cli_debug_dry_run_fills_best_fusion_from_debug_records(  # type: ignore[no-untyped-def]
+    tmp_path: Path, capsys
+) -> None:
+    runs = tmp_path / "frozen"
+    _write_selection_records(runs, {"F1": .3, "F2": .2, "F3": .1, "F4": .4}, RunKind.DEBUG)
+    args = [
+        "--debug", "--experiments", "mnli_finetune_full", "--best-fusion-from", str(runs),
+        "--seeds", "0", "--lr-candidates", "1e-3", "--finetune-lr-candidates", "2e-5",
+        "--epochs", "1", "--early-stopping-patience", "1", "--batch-size", "8",
+        "--output-dir", str(tmp_path / "out"), "--dry-run",
+    ]
+    assert cli.main(args) == 0
+    printed = capsys.readouterr().out
+    assert "[best-fusion] F3" in printed
+    assert "mnli-full-F3-all-finetune-none-s0-debug" in printed
+    assert "mnli-full-B0-all-finetune-none-s0-debug" in printed
+
+
+def test_cli_without_best_fusion_from_still_refuses_the_placeholder(tmp_path: Path) -> None:
+    args = [
+        "--debug", "--experiments", "mnli_finetune_full", "--seeds", "0",
+        "--lr-candidates", "1e-3", "--finetune-lr-candidates", "2e-5", "--epochs", "1",
+        "--early-stopping-patience", "1", "--batch-size", "8",
+        "--output-dir", str(tmp_path / "out"), "--dry-run",
+    ]
+    with pytest.raises(SystemExit, match="BEST_FUSION"):
+        cli.main(args)
+
+
+def test_cli_missing_rules_file_ends_with_a_clean_error(tmp_path: Path) -> None:
+    runs = tmp_path / "frozen"
+    _write_selection_records(runs, {"F1": .3, "F2": .2, "F3": .1, "F4": .4}, RunKind.DEBUG)
+    args = [
+        "--debug", "--experiments", "mnli_finetune_full", "--best-fusion-from", str(runs),
+        "--rules", str(tmp_path / "no_such_rules.yaml"), "--seeds", "0",
+        "--lr-candidates", "1e-3", "--finetune-lr-candidates", "2e-5", "--epochs", "1",
+        "--early-stopping-patience", "1", "--batch-size", "8",
+        "--output-dir", str(tmp_path / "out"), "--dry-run",
+    ]
+    with pytest.raises(SystemExit, match="error: .*no_such_rules.yaml"):
+        cli.main(args)

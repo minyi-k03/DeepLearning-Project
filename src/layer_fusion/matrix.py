@@ -12,6 +12,8 @@ runs the first seed of each setting, then fills the other seeds with :func:`with
 from __future__ import annotations
 
 import itertools
+import math
+from collections.abc import Sequence
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any
@@ -29,11 +31,17 @@ from layer_fusion.contracts import (
     ResultRecord,
     RunConfig,
     RunKind,
+    TrackKind,
 )
 from layer_fusion.records import same_setting
 
 # Placeholder in experiment_matrix.yaml for the method chosen after T-08d (T-07a rule).
 BEST_FUSION_PLACEHOLDER = "BEST_FUSION"
+# decision_rules.yaml best_fusion_selection_rule (T-07a): among F1-F4, the lowest tuning-split
+# error rate at the selected LR of each method's MNLI frozen-full LR-selection run; ties go to
+# the lower number; the eval set is never used to choose.
+BEST_FUSION_RULE = "lowest_tuning_error_among_f1_to_f4"
+BEST_FUSION_CANDIDATES = (FusionMethod.F1, FusionMethod.F2, FusionMethod.F3, FusionMethod.F4)
 
 
 @dataclass(frozen=True)
@@ -142,7 +150,9 @@ def _as_list(experiment: dict[str, Any], plural: str, singular: str) -> list[Any
     return [experiment.get(singular)]
 
 
-def _experiment_problems(experiment: dict[str, Any], seeds: list[int] | None) -> list[str]:
+def _experiment_problems(
+    experiment: dict[str, Any], seeds: list[int] | None, best_fusion: FusionMethod | None = None
+) -> list[str]:
     exp_id = experiment["id"]
     problems = []
     if seeds is None:
@@ -150,7 +160,7 @@ def _experiment_problems(experiment: dict[str, Any], seeds: list[int] | None) ->
     methods = experiment.get("fusion_methods")
     if methods is None:
         problems.append(f"{exp_id}: fusion_methods is TBD")
-    elif BEST_FUSION_PLACEHOLDER in methods:
+    elif BEST_FUSION_PLACEHOLDER in methods and best_fusion is None:
         problems.append(
             f"{exp_id}: fusion_methods has {BEST_FUSION_PLACEHOLDER} "
             "(chosen from T-08d results by the 11/30 rule)"
@@ -177,14 +187,19 @@ def expand_experiment_matrix(
     seeds: list[int] | None = None,
     run_kind: RunKind = RunKind.MAIN,
     budget_overrides: TrainingBudget | None = None,
+    best_fusion: FusionMethod | None = None,
 ) -> list[RunConfig]:
     """Expand the selected experiments into one RunConfig per (input setting, layer subset,
     fusion method, seed), in that nesting order with seeds ascending.
 
     The first seed of each setting is its LR-selection run. ``expected_cache_meta`` is built
     from the locked extraction setting in ``week1_env.yaml`` (main runs must declare it).
-    The ``reproduction_track`` block is not expanded here (T-06e).
+    The ``reproduction_track`` block is not expanded here (T-06e). ``best_fusion`` (from
+    :func:`select_best_fusion`) fills the ``BEST_FUSION`` placeholder; without it an experiment
+    holding the placeholder is refused.
     """
+    if best_fusion is not None and best_fusion not in BEST_FUSION_CANDIDATES:
+        raise ValueError(f"best_fusion must be one of F1 to F4, got {best_fusion.value}")
     if run_kind is RunKind.MAIN and seeds is not None:
         raise ValueError(
             "seed overrides are for debug runs only; main runs take the locked values"
@@ -205,7 +220,9 @@ def expand_experiment_matrix(
             if (problem := f"training_budget.{name} is TBD") not in problems:
                 problems.append(problem)
     for exp in experiments:
-        problems += _experiment_problems(exp, seeds if seeds is not None else exp.get("seeds"))
+        problems += _experiment_problems(
+            exp, seeds if seeds is not None else exp.get("seeds"), best_fusion
+        )
     if problems:
         raise ValueError("cannot expand the experiment matrix (TBD values):\n- " + "\n- ".join(
             problems
@@ -221,7 +238,10 @@ def expand_experiment_matrix(
             for v in _as_list(exp, "input_settings", "input_setting")
         ]
         layer_subsets = [LayerSubset(v) for v in _as_list(exp, "layer_subsets", "layer_subset")]
-        methods = [FusionMethod(m) for m in exp["fusion_methods"]]
+        methods = [
+            best_fusion if m == BEST_FUSION_PLACEHOLDER and best_fusion else FusionMethod(m)
+            for m in exp["fusion_methods"]
+        ]
         backbone = BackboneCondition(exp["backbone_condition"])
         # A finetune run computes float32 layer vectors live; there is no stored cache dtype.
         meta_dtype = "float32" if backbone is BackboneCondition.FINETUNE else dtype
@@ -261,4 +281,85 @@ def with_selected_lr(config: RunConfig, selection_record: ResultRecord) -> RunCo
         config,
         fixed_lr=selection_record.selected_lr,
         lr_selection_seed=selection.seed,
+    )
+
+
+@dataclass(frozen=True)
+class BestFusionChoice:
+    """The fine-tune comparison method chosen by the T-07a rule, with what it was chosen from."""
+
+    method: FusionMethod
+    scores: dict[FusionMethod, float]  # tuning-split error at each method's selected LR
+    run_ids: dict[FusionMethod, str]  # the LR-selection run each score comes from
+
+
+def select_best_fusion(
+    records: Sequence[ResultRecord],
+    rule: Any,
+    *,
+    run_kind: RunKind = RunKind.MAIN,
+) -> BestFusionChoice:
+    """Apply ``best_fusion_selection_rule`` to the MNLI frozen-full results (T-08d -> T-08f).
+
+    Reads only the LR-selection runs (``fixed_lr is None``) of F1-F4 on MNLI, frozen backbone,
+    full data, no input setting, all layers, track main and the given ``run_kind`` (a main queue
+    never reads debug records). Each method needs exactly one such run, and for main runs it must
+    be seed 0 as the rule says. The score is the tuning-split error rate at the selected LR
+    (``lr_tuning_scores[selected_lr]``); the eval set is not used. ``+inf`` marks a diverged
+    candidate and is skipped; NaN or ``-inf`` is a corrupted record and is refused.
+    """
+    if rule is None:
+        raise ValueError("best_fusion_selection_rule is TBD (fixed at the 11/30 lock, T-07a)")
+    if rule != BEST_FUSION_RULE:
+        raise ValueError(
+            f"unknown best_fusion_selection_rule {rule!r}; supported: {BEST_FUSION_RULE!r}"
+        )
+    found: dict[FusionMethod, list[ResultRecord]] = {m: [] for m in BEST_FUSION_CANDIDATES}
+    for record in records:
+        config = record.config
+        if (
+            config.fusion_method in found
+            and config.run_kind is run_kind
+            and config.track is TrackKind.MAIN
+            and config.dataset is DatasetName.MNLI
+            and config.backbone_condition is BackboneCondition.FROZEN
+            and config.data_amount is DataAmount.FULL
+            and config.input_setting is None
+            and config.layer_subset is LayerSubset.ALL
+            and config.fixed_lr is None
+        ):
+            found[config.fusion_method].append(record)
+    problems = [
+        f"{method.value}: {len(runs)} LR-selection runs ({[r.run_id for r in runs]}), need 1"
+        for method, runs in found.items()
+        if len(runs) != 1
+    ]
+    if problems:
+        raise ValueError(
+            f"cannot choose BEST_FUSION from the {run_kind.value} MNLI frozen-full selection "
+            "runs (is T-08d finished?):\n- " + "\n- ".join(problems)
+        )
+    chosen = {method: runs[0] for method, runs in found.items()}
+    if run_kind is RunKind.MAIN:
+        not_seed_0 = [r.run_id for r in chosen.values() if r.config.seed != 0]
+        if not_seed_0:
+            raise ValueError(
+                f"the rule reads the LR-selection run of seed 0; these main selection runs are "
+                f"on another seed: {not_seed_0}"
+            )
+    missing = [r.run_id for r in chosen.values() if r.selected_lr not in r.lr_tuning_scores]
+    if missing:
+        raise ValueError(f"selection runs without a tuning score for their selected LR: {missing}")
+    scores = {
+        method: float(rec.lr_tuning_scores[rec.selected_lr]) for method, rec in chosen.items()
+    }
+    corrupted = [m.value for m, s in scores.items() if math.isnan(s) or s == -math.inf]
+    if corrupted:
+        raise ValueError(f"tuning scores are NaN or -inf (corrupted records) for {corrupted}")
+    usable = [m for m in BEST_FUSION_CANDIDATES if scores[m] != math.inf]
+    if not usable:
+        raise ValueError("cannot choose BEST_FUSION: every F1-F4 selection run diverged")
+    best = min(usable, key=lambda m: (scores[m], BEST_FUSION_CANDIDATES.index(m)))
+    return BestFusionChoice(
+        method=best, scores=scores, run_ids={m: r.run_id for m, r in chosen.items()}
     )
