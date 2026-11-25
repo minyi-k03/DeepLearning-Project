@@ -10,7 +10,9 @@ experiments:
     fusion_methods: [B0, F1, F2, F3, F4, B0+]
     layer_subset: all
     hypotheses: [H1, H4_prime]
-    seeds: null  # 11/30 판정 규칙 문서에서 확정 (핵심 5시드 / 나머지 3시드)
+    # 시드 목록은 중첩이다(T-07a): 핵심 비교 5시드 [0..4], 나머지·파인튜닝 3시드 [0..2].
+    # H2·H3은 두 조건의 공통 시드로 판정한다(decision_rules.yaml, judgment.py).
+    seeds: [0, 1, 2, 3, 4]  # 핵심 5시드
 
   - id: mnli_frozen_small
     dataset: mnli
@@ -20,7 +22,7 @@ experiments:
     fusion_methods: null  # TBD (구현 단계에서 확정)
     layer_subset: all
     hypotheses: [H2]
-    seeds: null
+    seeds: [0, 1, 2]
 
   - id: mnli_finetune_full
     dataset: mnli
@@ -30,7 +32,7 @@ experiments:
     fusion_methods: [B0, BEST_FUSION]  # 가장 좋은 결합 방식은 H1/사전 규칙 기준 확정
     layer_subset: all
     hypotheses: [H3]
-    seeds: null
+    seeds: [0, 1, 2]  # finetune_num_seeds = 3
 
   - id: sst2_frozen_full
     dataset: sst2
@@ -40,7 +42,7 @@ experiments:
     fusion_methods: null  # TBD (층 가중치 비교에 F2 필수 포함)
     layer_subset: all
     hypotheses: [H4]
-    seeds: null
+    seeds: [0, 1, 2]
 
   - id: imdb_frozen_length
     dataset: imdb
@@ -50,7 +52,7 @@ experiments:
     fusion_methods: [B0, F1, F2]
     layer_subset: all
     hypotheses: [H5a, H5b]
-    seeds: null
+    seeds: [0, 1, 2, 3, 4]  # 핵심 5시드
 
   - id: imdb_frozen_layer_ablation
     dataset: imdb
@@ -60,7 +62,7 @@ experiments:
     fusion_methods: [F2]
     layer_subsets: [global_only, local_only]  # 임베딩 벡터 제외
     hypotheses: [H5c]
-    seeds: null
+    seeds: [0, 1, 2]
 
   - id: imdb_frozen_lfull_f4
     dataset: imdb
@@ -70,7 +72,7 @@ experiments:
     fusion_methods: [F4]
     layer_subset: all
     hypotheses: [H5c]
-    seeds: null
+    seeds: [0, 1, 2]
 
 reproduction_track:
   # 본 실험 결과표와 분리됨 (ADR 0004). 학습률·가중치 감쇠·에폭은 논문 값

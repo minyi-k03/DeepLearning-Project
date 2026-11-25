@@ -89,14 +89,38 @@ def test_seed_mean_std_uses_sample_std() -> None:
 RULES_YAML = ROOT / "configs" / "decision_rules.yaml"
 
 
-def test_loader_reads_the_real_rules_file_and_keeps_tbd_values_unset() -> None:
+def test_loader_reads_the_real_rules_file_with_the_t07a_values() -> None:
     rules = load_decision_rules(str(RULES_YAML))
 
-    assert rules.status == "draft"
+    assert rules.status == "draft"  # becomes "locked" after both members approve (11/30)
     assert rules.freeze_date == "2026-11-30"
     assert rules.core_num_seeds == 5
     assert rules.secondary_num_seeds == 3
-    # TBD until the 11/30 lock: never guessed, left as None (AGENTS.md §2).
+    assert rules.mcnemar_alpha == 0.05
+    assert rules.multiple_comparison_correction == "none"  # a string, not null (null is TBD)
+    assert rules.multi_seed_mcnemar_aggregation == "majority_of_seeds"
+    assert rules.h1_target_fusion_rule == "F2"
+    assert rules.h5a_target_fusion_rule == "F2"
+    assert rules.min_bucket_samples == 100
+    assert rules.finetune_num_seeds == 3
+    assert rules.core_comparisons_for_5_seeds == ["mnli_frozen_full", "imdb_frozen_length"]
+    assert rules.include_embedding_in_cog is False
+    assert rules.include_embedding_in_global_denom is False
+    assert rules.seed_rank_corr_min == 0.7
+    assert rules.cog_seed_std_max == 2.0
+
+
+def test_loader_keeps_a_null_rule_value_unset(tmp_path: Path) -> None:
+    """A null stays None and is never filled with a guess (AGENTS.md §2)."""
+    path = tmp_path / "rules.yaml"
+    path.write_text(
+        "freeze_date: '2026-11-30'\nstatus: draft\n"
+        "criteria: {core_num_seeds: 5, secondary_num_seeds: 3, mcnemar_alpha: null}\n",
+        encoding="utf-8",
+    )
+
+    rules = load_decision_rules(str(path))
+
     assert rules.mcnemar_alpha is None
     assert rules.multi_seed_mcnemar_aggregation is None
     assert rules.h1_target_fusion_rule is None
