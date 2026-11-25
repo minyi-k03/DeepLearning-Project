@@ -335,7 +335,7 @@ def test_run_id_is_deterministic(noisy_provider, make_run_config) -> None:  # ty
         ({"early_stopping_patience": 0}, ValueError),  # would behave exactly like 1
         ({"lr_candidates": (1e-3, float("inf"), 1e-1)}, ValueError),
         ({"lr_candidates": (1e-3, float("nan"), 1e-1)}, ValueError),
-        ({"track": TrackKind.REPRODUCTION}, ValueError),  # run_reproduction_track's job
+        ({"track": TrackKind.REPRODUCTION}, ValueError),  # run_reproduction's job (T-06e)
         ({"dataset": DatasetName.IMDB}, ValueError),  # IMDB without input_setting
         ({"dataset": DatasetName.SST2, "input_setting": InputSetting.L512}, ValueError),
         ({"lr_candidates": ()}, ValueError),

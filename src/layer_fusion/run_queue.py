@@ -247,7 +247,7 @@ def _run_all(
             run_id = run_id_of(config)
             path = record_path(output_dir, run_id)
             if path.exists():
-                existing = _matching_record(path, config)
+                existing = matching_record(path, config)
                 log(f"[queue {index}/{total}] skip {run_id} (record exists)")
                 result.skipped.append(run_id)
                 if config.seed == selection.seed:
@@ -272,7 +272,7 @@ def _run_all(
     return result
 
 
-def _matching_record(path: Path, config: RunConfig) -> ResultRecord:
+def matching_record(path: Path, config: RunConfig) -> ResultRecord:
     """The record at ``path``, which must have been made with exactly ``config``.
 
     The run id leaves out the tuning budget and the expected cache metadata, so a record from
@@ -309,7 +309,7 @@ def _selection_record(
             f"selection-run record {path} is missing: seed {selection.seed} of this setting "
             "must run before the seeds that reuse its LR"
         )
-    record = _matching_record(path, selection)
+    record = matching_record(path, selection)
     selection_records.append(record)
     return record
 
