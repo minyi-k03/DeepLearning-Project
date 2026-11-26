@@ -82,31 +82,29 @@ def test_real_matrix_seed_lists_follow_the_decision_rules() -> None:
         assert exp["seeds"] == list(range(expected)), exp_id  # nested: [0..n-1]
 
 
-def test_real_config_files_are_refused_while_values_are_tbd() -> None:
-    """Today the real matrix and budget are TBD; expansion must say what is missing."""
+def test_real_config_files_are_refused_only_for_best_fusion() -> None:
+    """The budget is filled (11/26); only BEST_FUSION (picked from T-08d) blocks expansion."""
     with pytest.raises(ValueError) as info:
         expand_experiment_matrix(REAL_MATRIX, REAL_ENV)
     message = str(info.value)
-    assert "training_budget.batch_size is TBD" in message  # waits for the metis batch-64 VRAM check
-    assert "training_budget.epochs is TBD" not in message  # 11/26: 20 (cap), T-08d budget
-    assert "training_budget.early_stopping_patience is TBD" not in message  # 11/26: patience 3
+    assert "training_budget" not in message  # 11/26 T-08d budget: batch 32, epochs 20, patience 3
     assert "seeds is TBD" not in message  # fixed at the T-07a draft: core [0..4], others [0..2]
     assert "fusion_methods is TBD" not in message  # agenda B (11/25): small and SST-2 lists
     assert "lr_candidates is TBD" not in message  # agenda A (11/25): both candidate lists
     assert "mnli_finetune_full: fusion_methods has BEST_FUSION" in message
 
 
-def test_real_budget_leaves_only_the_batch_size_tbd() -> None:
-    # batch 32 vs 64 waits for the metis fine-tune batch-64 VRAM check (issue #32)
-    assert load_training_budget(REAL_ENV).missing() == ["batch_size"]
+def test_real_budget_has_no_tbd_left() -> None:
+    assert load_training_budget(REAL_ENV).missing() == []
 
 
 def test_real_config_holds_the_t08d_budget_values() -> None:
-    """11/26 T-08d budget: a generous epoch cap ended by early stopping, shared by both
-    backbone conditions (no fine-tune-only epochs)."""
+    """11/26 T-08d budget (issue #32): a generous epoch cap ended by early stopping and batch 32,
+    shared by both backbone conditions (no fine-tune-only epochs or batch)."""
     budget = load_training_budget(REAL_ENV)
     assert budget.epochs == 20
     assert budget.early_stopping_patience == 3
+    assert budget.batch_size == 32
     env = yaml.safe_load(REAL_ENV.read_text(encoding="utf-8"))
     assert env["training_budget"]["extract_time_included_in_train_time"] is False
 
