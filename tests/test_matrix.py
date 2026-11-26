@@ -10,6 +10,7 @@ import yaml
 
 from layer_fusion.cache_build import load_env_config
 from layer_fusion.contracts import (
+    BackboneCondition,
     DataAmount,
     DatasetName,
     FusionMethod,
@@ -95,7 +96,9 @@ def test_real_config_files_are_refused_only_for_best_fusion() -> None:
 
 
 def test_real_budget_has_no_tbd_left() -> None:
-    assert load_training_budget(REAL_ENV).missing() == []
+    budget = load_training_budget(REAL_ENV)
+    assert budget.missing() == []
+    assert budget.missing(BackboneCondition.FINETUNE) == []  # finetune_lr_candidates too
 
 
 def test_real_config_holds_the_t08d_budget_values() -> None:
