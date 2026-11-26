@@ -39,11 +39,12 @@ dataset_approval:
   sst2_approved: true              # 교수님 승인 여부 (미승인 시 제외, ADR 0003) — 승인 확정 (T-02c, 2026-11-18)
 
 training_budget:
-  # 학습률 후보는 11/25 결정 안건 A(팀 결정). 에폭·조기 종료·배치는 metis GPU 시간 측정 후 정한다.
+  # 학습률 후보는 11/25 결정 안건 A(팀 결정). 에폭·조기 종료는 11/26 T-08d 시간 측정으로 제안(이슈 #32).
+  # 에폭·조기 종료·배치는 백본 고정과 파인튜닝이 같이 쓴다(파인튜닝 전용 값 없음, matrix.TrainingBudget).
   lr_candidates: [1.0e-4, 1.0e-3, 1.0e-2]  # 학습률 후보 3개 (튜닝 분할에서 선택, 모든 결합 방식 동일)
-  epochs: null                     # 모든 결합 방식 동일 에폭 수
-  early_stopping: null             # 모든 결합 방식 동일 조기 종료 기준
-  batch_size: null
+  epochs: 20                       # 상한. MNLI 백본 고정 F4·B0+가 10에폭까지 튜닝 오차가 내려가 두 배 여유. 실행은 조기 종료로 멈추게 한다
+  early_stopping: 3                # patience(에폭). 튜닝 오차율·손실이 3에폭 연속 개선 없으면 멈추고 최적 에폭으로 되돌림
+  batch_size: null                 # 32 vs 64 미정: metis 파인튜닝 배치 64 VRAM 실측 후 결정(이슈 #32)
   finetune_lr_candidates: [2.0e-5, 5.0e-5, 8.0e-5]  # 파인튜닝 조건 학습률 후보 (논문 Table 6 MNLI 5e-5·SST-2 8e-5 주변)
   include_special_tokens_in_pool: true  # 토큰 평균에 [CLS]·[SEP] 포함. 팀 결정 2026-11-18 (PR #8 리뷰, 고용민 합의)
-  extract_time_included_in_train_time: null
+  extract_time_included_in_train_time: false  # 추출 시간은 캐시 report.json에 따로 보고(캐시 하나를 모든 결합 방식·시드가 공유)
